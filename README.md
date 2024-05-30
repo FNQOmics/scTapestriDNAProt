@@ -1,2 +1,2 @@
 # scTapestriDNAProt
-Pipeline for analysing single cell Tapestri DNA + Protein data
+Pipeline for analysing single cell Tapestri DNA + Protein data.
