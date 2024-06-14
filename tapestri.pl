@@ -1,14 +1,16 @@
-#! /usr/bin/perl -w
+#! /usr/bin/perl 
 use strict;
-use modules::Exception;
-use modules::Vcf;
-use modules::SystemCall;
+use vars qw(%OPT);
+use FindBin qw( $RealBin );
+use lib $RealBin;
+use Exception;
+use Vcf;
+use VEP;
 use Getopt::Long;
 use File::Basename;
 use Pod::Usage;
 use Data::Dumper;
 use Cwd 'abs_path';
-use vars qw(%OPT);
 
 # Command line arguments
 GetOptions(\%OPT, 
@@ -16,32 +18,31 @@ GetOptions(\%OPT,
 	   "man|m",
 	   "vcf_in=s",
 	   "outdir=s",
-	   "ref=s",
-	   "no_zyg",
-	   "gene_anno_file=s",
-	   "gene_coord_file=s",
-	   "gnomad_version=s",
-	   "no_run",
-	   "skip_vep",
-	   "sample_file=s",
-	   "count_all",
-	   "control_file=s",
-	   "somatic",
 	   "outfile=s",
-	   "max_nocall_count=i",
-	   "min_sample_count=i",
+	   "cell_annotation_file=s",
+	   "cell_type=s",
+	   "annotate_conf=s",
+	   "min_varcount_total=i",
+	   "min_varcount_celltype=i",
+	   "min_varportion_total=s",
+	   "min_varportion_celltype=s",
+	   "min_datacount_total=i",
+	   "min_datacount_celltype=i",
+	   "min_dataportion_total=s",
+	   "min_allelefreq_mean_total=s",
+	   "min_odds_ratio=s",
+       "zscore_cutoff=s",
+	   "only_somatic",
+	   "no_run",
+	   "sample_file=s",
+	   "control_file=s",
        "chr=s",
-       "sc_min_var=i",
-       "sc_min_total=i",
-       "sc_min_portion=s",
-       "vartrix_input=s",
-       "mb_matrix",
-       "sort_column=s",
-       "priority_genes=s",
-       "group_file=s",
-       "min_mean_af=s",
+       "celltype_sort_column=s",
+       "all_sort_column=s",
        "plot_genes=s",
-       "high_quality"
+       "rare_cutoff=s",
+       "odds_ratio_cutoff=s",
+       "overwrite"
    );
 
 pod2usage(-verbose => 2) if $OPT{man};
@@ -51,36 +52,38 @@ pod2usage(1) if ($OPT{help} || !$OPT{vcf_in});
 
 =head1 SYNOPSIS
 
-quick_annotate_vcf.pl 
+tapestri.pl 
 	-vcf_in output_dir 
 	-outdir outdir(default=cwd)
-	-min_sample_count minimum_number_samples_with_variant
-	-ref ref_genome(default=GRCh38)
-	-no_zyg no_zyg_info
-	-no_run list_commands_and_quit 
-	-gene_anno_file gene_annotation_file 
-	-gene_coord_file gene_coordinate_file 
-	-skip_vep vep_already_run 
-	-control_file for_mixed_datasets_where_specific_controls_are_needed 
-	-sample_file only_include_vars_in_these_samples_dont_count_other_sample
-	-count_all with_sample_file_count_all
-	-somatic with_sample_file_vars_are_somatic_and_exclusive_to_sample_list
 	-outfile output_summary_name(in_outdir)
-	-gnomad_version version(default=2.0.1)
-	-max_nocall_count don't_include_variants_with_this_many_nocalls 
+	-cell_annotation_file cell_annotation_file(tsv_with_format 'sample celltype')
+	-cell_type specific_celltype_to_use(default=all)
+	-annotate_conf conf_file_if_running_vep_annotation_steps
+	-min_varcount_total minimum_number_samples_with_variant
+	-min_varcount_celltype minimum_number_samples_in_celltype_with_variant
+	-min_varportion_total minimum_portion_total_samples_with_variant
+	-min_varportion_celltype minimum_portion_celltype_samples_with_variant
+	-min_datacount_total minimum_number_samples_with_variant
+	-min_datacount_celltype minimum_number_samples_in_celltype_with_variant
+	-min_dataportion_total minimum_portion_total_samples_with_variant
+	-min_total_qual minimum_total_quality_score
+	-min_total_persample_qual minimum_persample_quality_score
+	-min_odds_rario min_odds_ratio_to_include
+	-min_allelefreq_mean_total min_AF_average_total_cutoff
+	-only_somatic only_celltype_specific_variants
+	-no_run list_commands_and_just_generate_report 
+	-sample_file run_for_sample_subset
+	-control_file for_mixed_datasets_where_specific_controls_are_needed 
+	-celltype_sort_column columnname_to_sortby_in_celltype_files(assumes_numerical_descending,default=odds_ratio)
+	-all_sort_column columnname_to_sortby_in_all_files(assumes_numerical_descending,default=average_qual_per_sample)
 	-chr run_for_chr 
-	-vartrix_input vartrix_file(from_R_code) 
-	-sc_min_var sc_min_variant_cells 
-	-sc_min_total sc_min_cells_with_data 
-	-sc_min_portion portion_sc_with_data_that_are_variant 
-	-sort_column columnname_to_sort_by 
-	-priority_genes genelist_to_flag 
-	-group_file report_variants_by_groups(filters_applied_at_top_level) 
-	-min_mean_af min_allele_frequency_from_variant_samples 
-	-plot_genes file_of_genes_to_plot_for_MB
-	-high_quality apply_combination_of_stringent_filters_with_single_flag
+	-plot_genes file_of_genes_to_plot(requires_vep_for_priority_variants)
+	-rare_cutoff cutoff_for_rare_allele_freq(default=0.02)
+	-odds_ratio_cutoff cutoff_for_oddsratio(default=2)
+	-zscore_cutoff cutoff_for_zscore(default=1.65)
+	-overwrite overwrite_all_existing_files
 
-Required flags: -vcf_in 
+Required flags: -vcf_in -cell_annotation_file
 
 =head1 OPTIONS
 
@@ -90,7 +93,7 @@ Required flags: -vcf_in
 
 =head1 NAME
 
-quick_annotate_vcf.pl -> generate annotated report files from a vcf containing multiple samples for WGS, singlecell, etc
+tapestri.pl -> generate summary files from a tapestri vcf for all clones as well as for each celltype 
 
 =head1 DESCRIPTION
 
@@ -134,55 +137,35 @@ Matthew Field
 #MB with all cluster groups and no sample zygosities and 25 samples and sorted by avg_variant_score
 ./quick_annotate_vcf.pl -vcf_in 1912.cells.hg38.vcf -outdir analysis/ -outfile Celiac_1912_cat1groups_min25samples -group_file group_file_cat1.tsv -no_run -no_zyg -min_sample_count 25 -sort_column average_qual_per_sample
 
-#Vartrix
-./quick_annotate_vcf.pl -skip_vep -no_run -vcf_in CarT_nochr.vcf -outdir gatk_results/ -outfile CarT_vartrix -vartrix_input vartrix/snv_matrix.tsv
-
-#Vartrix with sc cutoffs applied
-./quick_annotate_vcf.pl -outdir results/ -outfile patient2_Product_10X_v3t10p20 -vcf Product_10X_chr.vcf -vartrix_input  vartrix/snv_matrix.tsv -sc_min_portion 0.2 -sc_min_var 3 -sc_min_total 10
 
 
 =cut
 
-my $svndir;
-if (!exists $ENV{'SVNDIR'}) {
-	modules::Exception->throw("ERROR:  You need to set system paths and svn directory by running 'source ../conf/export_env.txt ..' from the current working svn/scripts directory\n");
-} else {
-	$svndir = $ENV{'SVNDIR'};
+
+my $rare_cutoff = defined $OPT{rare_cutoff}?$OPT{rare_cutoff}:0.02;
+if ($rare_cutoff > 0.5 && $rare_cutoff <= 0) {
+	Exception->throw("ERROR: Rare cutoff freq must be >1 and <0.5");
+} 
+my $odds_ratio_cutoff = defined $OPT{odds_ratio_cutoff}?$OPT{odds_ratio_cutoff}:2;
+
+my $zscore_cutoff = defined $OPT{zscore_cutoff}?$OPT{zscore_cutoff}:1.65;
+
+
+
+my $vcf_file = $OPT{vcf_in};
+$vcf_file = abs_path($vcf_file);
+
+if ( !-e $vcf_file ) {
+	Exception->throw("File $vcf_file doesn't exist");	
 }
 
-
-if (!-d $svndir) {
-	modules::Exception->throw("ERROR: $svndir doesn't exist\n");
-}
-
-my $rare_cutoff = 0.02;
-my $ref = defined $OPT{ref}?$OPT{ref}:"GRCh38";
-
-#Whether to include sample zygosity columns; for single cell this isn't useful for example creating huge number of columns
-my $incl_zyg = defined $OPT{no_zyg}?0:1;
-
-my $gnomad_version = defined $OPT{gnomad_version}?$OPT{gnomad_version}:"2.0.1";
-
-my $gnomad_base = $svndir.'/conf/human/'.$ref.'/gnomad/'.$gnomad_version.'/'.$ref.'.gnomAD.overlap';
-
-my $vcf = $OPT{vcf_in};
-$vcf = abs_path($vcf);
-
-if ( !-e $vcf ) {
-	modules::Exception->throw("File $vcf doesn't exist");	
-}
+my $vcf = Vcf->new(-vcf=>$vcf_file);
 
 #Keep track of total var/sample to allow potential filtering (rerun with reduced sample list)
 my %sample_varcount = ();
 
-#MissionBio flag for creating matrix
-my $mb = defined $OPT{mb_matrix}?1:0;
-
-#For comparing one cell type vs the rest
-my $count_all = defined $OPT{count_all}?1:0;
-
 #For output files
-my ($vcf_short) = basename($vcf);
+my ($vcf_short) = basename($vcf_file);
 (my $vcf_out = $vcf_short) =~ s/.vcf/.txt/;
 
 #Default run all chromosomes
@@ -193,19 +176,26 @@ my $outdir = defined $OPT{outdir}?$OPT{outdir}:`pwd`;
 chomp $outdir;
 $outdir = abs_path($outdir);
 
+my $script_dir = dirname(__FILE__);
+my $vep = defined $OPT{annotate_conf}?1:0;
+
+my $only_somatic = defined $OPT{only_somatic}?1:0;
+
+
+my $cell_anno = defined $OPT{cell_annotation_file}?1:0;
+if ( $cell_anno && !-e $OPT{cell_annotation_file} ) {
+	modules::Exception->throw("File $OPT{cell_annotation_file} doesn't exist");
+}
+
+my $specific_cell_type = defined $OPT{cell_type}?$OPT{cell_type}:'All';
+
+my $overwrite = defined $OPT{overwrite}?1:0;
 
 if (!-d $outdir) {
         `mkdir $outdir`;
 }
 
 #For creating matrices for downstream analysis for vatrix and tapestri
-my %vartrix_map = (
-				"0" => "no_call",
-				"1" => "ref",
-				"2" => "hom",
-				"3" => "het"
-				);
-
 my %mb_map = (
 				"no_call" => 0,
 				"ref" => 1,
@@ -214,149 +204,56 @@ my %mb_map = (
 			);
 
 
+my $min_varcount_total = defined $OPT{min_varcount_total}?$OPT{min_varcount_total}:1;
+my $min_varcount_celltype = defined $OPT{min_varcount_celltype}?$OPT{min_varcount_celltype}:1;
+my $min_varportion_total = defined $OPT{min_varportion_total}?$OPT{min_varportion_total}:0;
 
-#Vartrix input file
-my $vartrix_input = defined $OPT{vartrix_input}?$OPT{vartrix_input}:0;
-my $vartrix_summary = $outdir."/vartrix_summary.txt";
-
-if ($vartrix_input) {
-	
-	if ( !-e $vartrix_input ) {
-		modules::Exception->throw("File $vartrix_input doesn't exist");
-	}
-	
-	#Create the vartrix summary file we're expecting later if it doesn't exist
-	if (!-e $vartrix_summary) {
-		
-	
-		open(MATRIX,$vartrix_input) || modules::Exception->throw("Can't open file $vartrix_input\n");
-		open(VAROUT,">$vartrix_summary") || modules::Exception->throw("Can't open file to write $vartrix_summary\n");
-		
-	
-		print VAROUT join("\t",
-							"Coord",
-							"No data",
-							"Ref",
-							"Hom",
-							"Het",
-							"% Calls",
-							"% Variant"
-							) ."\n\n";
-	
-		while (<MATRIX>) {
-			next unless /chr/;
-			chomp;
-			my @fields = split("\t");
-			my $coord = shift @fields;
-			$coord =~ s/"//g;
-			my %line_count = ();
-			for my $call (@fields) {
-				$line_count{$vartrix_map{$call}}++;
-			}
-			
-			my $nd = defined $line_count{'no_call'}?$line_count{'no_call'}:0;
-			my $ref = defined $line_count{'ref'}?$line_count{'ref'}:0;
-			my $hom = defined $line_count{'hom'}?$line_count{'hom'}:0;
-			my $het = defined $line_count{'het'}?$line_count{'het'}:0;
-			my $var_sum = $het+$hom;
-			my $called_sum = $var_sum + $ref;
-			
-			
-			#my $pc_total = sprintf("%.2f",$var_sum/4958 *100);
-			my $pc_called = $called_sum>0?sprintf("%.2f",$var_sum/$called_sum *100):0.00;
-			
-			print VAROUT join("\t", "$coord", $nd, $ref, $hom, $het, $pc_called) . "\n";
-			#print Dumper \%line_count;
-		}
-		close VAROUT;
-	}
-	print "Parsed vartrix....\n";
+if ($min_varportion_total > 1 || $min_varportion_total < 0) {
+	Exception->throw("Error: Portion varaiable must be in range 0-1\n");
 }
+
+my $min_varportion_celltype = defined $OPT{min_varportion_celltype}?$OPT{min_varportion_celltype}:0;
+
+if ($min_varportion_celltype > 1 || $min_varportion_celltype < 0) {
+	Exception->throw("Error: Portion varaiable must be in range 0-1\n");
+}
+
+my $min_datacount_total = defined $OPT{min_datacount_total}?$OPT{min_datacount_total}:1;
+my $min_datacount_celltype = defined $OPT{min_datacount_celltype}?$OPT{min_datacount_celltype}:1;
+my $min_dataportion_total = defined $OPT{min_dataportion_total}?$OPT{min_datacount_total}:0;
+
+if ($min_dataportion_total > 1 || $min_dataportion_total < 0) {
+	Exception->throw("Error: Portion varaiable must be in range 0-1\n");
+}
+
+
+my $min_total_qual = defined $OPT{min_total_qual}?$OPT{min_total_qual}:0;
+my $min_total_persample_qual = defined $OPT{min_total_persample_qual}?$OPT{min_total_persample_qual}:0;
+my $min_odd_ratio = defined $OPT{min_odd_ratio}?$OPT{min_odd_ratio}:0;
+my $min_allelefreq_mean_total = defined $OPT{min_allelefreq_mean_total}?$OPT{min_allelefreq_mean_total}:0;
+my $min_allelefreq_mean_celltype = defined $OPT{min_allelefreq_mean_celltype}?$OPT{min_allelefreq_mean_celltype}:0;
 
 #Handling of edge cases
 
-#Either pass sample file with -somatic flag (everything else treated as control) or pass in control AND sample file for more complex subsetting
-if ($OPT{somatic} && $OPT{control_file}) {
-	modules::Exception->throw("Only use control_file or somatic flag. Somatic flag treats everything not in sample as control");
-}
-
-if ($OPT{somatic} && !$OPT{sample_file}) {
-	modules::Exception->throw("ERROR: Can't use somatic option without sample_file\n");
-}
-
 if ($OPT{control_file} && !$OPT{sample_file}) {
-	modules::Exception->throw("ERROR: Can't use control option without sample_file\n");
+	Exception->throw("ERROR: Can't use control option without sample_file\n");
 }
 
-#Cell annotation file can't be combined with somatic
-if ($OPT{group_file} && $OPT{somatic}) {
-	modules::Exception->throw("Group_file can't be run with somatic\n");
-}
-
-
-if ($OPT{group_file} && $mb) {
-	modules::Exception->throw("Group_file can't be run with mb; mb is for single cluster\n");
-}
-
-if ($mb && !$OPT{sample_file}) {
-	modules::Exception->throw("mb required sample_file for single cluster\n");
-}
-
-my $parse_vcf = "$svndir/utils/parse_vcf.pl";
-my $overlap_bin = "$svndir/utils/overlap_files.pl";
-my $vep_wrapper = "$svndir/utils/vep_wrapper.pl";
-my $conf_dir = "$svndir/conf/human/".$ref;
-
-
-my $pipe_config = modules::Pipeline::get_pipe_conf();
-my @chrs = split(" ",$pipe_config->read('human_single_gatk','annotation_version','chr'));
-
-my $gene_dir = &GetLatest('gene');
-
-my %priority_genes = ();
-
-my $priority_genes = defined $OPT{priority_genes}?$OPT{priority_genes}:$gene_dir . "/Lymphoma_genes";
-
-if ( !-e $priority_genes ) {
-	modules::Exception->throw("File $priority_genes doesn't exist");
+if ($OPT{plot_genes} && !$vep) {
+	Exception->throw("ERROR: Plot genes only works for priority variants annotated with vep\n");
 }
 
 
-open(PRIOR,"$priority_genes") || modules::Exception->throw("Can't open file $priority_genes\n");
-
-while (<PRIOR>) {
-	chomp;
-	my ($gene) = $_ =~ /(\S+)/;
-	$priority_genes{$gene} = 1;
-}
-
-
+my $vep_wrapper = "$script_dir/vep_wrapper.pl";
+my $vep_conf = defined $OPT{vep_conf}?$OPT{vep_conf}:"$script_dir/tapestri.csv";
 
 my @var_types = qw(snv indel);
 
-my $gene_coord_file = my $gene_anno_file;
 
-
-#First parse the annotations file -> this is joined on ENSEMBL gene name
-
-if ($OPT{gene_anno_file}) {
-	$gene_anno_file = $OPT{gene_anno_file};
-} else {
-	my $file = $ref . '.gene.all';
-	$gene_anno_file = $gene_dir . '/' . $file;
-}
-
-if ( !-e $gene_anno_file ) {
-	modules::Exception->throw("File $gene_anno_file doesn't exist");	
-}
-
-my $subset = 0;
-
-
-#Look at specific samples
+#Look at specific samples only
 my %samples = ();
 if ($OPT{sample_file}) {
-	open(SAMPLE,"$OPT{sample_file}") || modules::Exception->throw("Can't open file $OPT{sample_file}\n");
+	open(SAMPLE,"$OPT{sample_file}") || Exception->throw("Can't open file $OPT{sample_file}\n");
 	while (<SAMPLE>) {
 		chomp;
 		my ($sample) = $_ =~ /^(\S+)/;
@@ -364,12 +261,10 @@ if ($OPT{sample_file}) {
 	}
 }
 
-my $somatic = defined $OPT{somatic}?1:0;
-
-#Look at specific samples
+#Use specific samples as controls
 my %controls = ();
 if ($OPT{control_file}) {
-	open(CONTROL,"$OPT{control_file}") || modules::Exception->throw("Can't open file $OPT{control_file}\n");
+	open(CONTROL,"$OPT{control_file}") || Exception->throw("Can't open file $OPT{control_file}\n");
 	while (<CONTROL>) {
 		chomp;
 		my ($sample) = $_ =~ /(\S+)/;
@@ -378,16 +273,15 @@ if ($OPT{control_file}) {
 }
 
 #Variant groups (i.e. cell annotations)
-my $group = defined $OPT{group_file}?1:0;
-my %groups = ();
-my %group_counts = ();
+my %cellanno = ();
+my %cellanno_counts = ();
 
 #Generate per gene plots
 my $plot = defined $OPT{plot_genes}?1:0;
 my %genes_to_plot = ();
 
 if ($plot) {
-	open(PLOTGENES,$OPT{plot_genes}) || modules::Exception->throw("Can't open file $OPT{plot_genes}\n");
+	open(PLOTGENES,$OPT{plot_genes}) || Exception->throw("Can't open file $OPT{plot_genes}\n");
 
 	while (<PLOTGENES>) {
 		chomp;
@@ -396,39 +290,17 @@ if ($plot) {
 	}
 }
 
-if (!$group && $plot) {
-	modules::Exception->throw("ERROR: Need to use groups to genereate per gene plots");
-}
-
-
-if ($group) {
-	open(GROUPFILE,"$OPT{group_file}") || modules::Exception->throw("Can't open file $OPT{group_file}\n");
-	while (<GROUPFILE>) {
+if ($cell_anno) {
+	open(ANNOFILE,$OPT{cell_annotation_file}) || Exception->throw("Can't open file $OPT{cell_anno_file}\n");
+	while (<ANNOFILE>) {
 		chomp;
-		my ($sample,$localgroup) = split();
-		$groups{$sample} = $localgroup;
-		$group_counts{$localgroup}++;
+		my ($sample,$celltype) = split();
+		$celltype =~ s/ /_/g;
+		$cellanno{$sample} = $celltype;
+		$cellanno_counts{$celltype}++;
 	}
-}
-
-
-my $anno_count;
-my %gene_anno = ();
-
-open(ANNO,"$gene_anno_file") || modules::Exception->throw("Can't open file $gene_anno_file\n");
-
-while (<ANNO>) {
-    chomp;
-    
-    my @fields = split("\t");
-    $anno_count = @fields;
-    my ($ens_gene)  = $fields[0] =~ /(ENS[A-Z]+\d+)/;
-    $gene_anno{$ens_gene} = \@fields;
-    
-}
-
-my @no_anno_line = ();
-push @no_anno_line, 'NO_ANNO' for (1..$anno_count); 
+} 
+	
 
 
 
@@ -445,200 +317,50 @@ my @common_headers = (
 						'no_data_count',
 						'mean_variant_af',
 						'median_variant_af',
-						'variant_read_count'
-						);
-
-
-my @vartrix_headers = (
-						'singlecell_nodata',
-						'singlecell_ref',
-						'singlecell_variants (singlecell_variant_%)'
-						);
-
-
-my @missionbio_headers_short = (
-						'cluster_variant_count',
-						'cluster_variant_freq',
-						);
-
-my @missionbio_headers_all = (
-						'cluster_variant_count',
-						'cluster_variant_freq',
-						'nocluster_variant_count',
-						'nocluster_variant_freq',
-						'cluster_nocluster_freq_diff',
-						'portion_in_cluster'
-						);
-
-
-
-my @group_headers = ();
-
-if ($group) {
-	for my $localgroup ( sort keys %group_counts ) {
-	    push @group_headers, "$localgroup var_count (het/hom)", "$localgroup ref_count", "$localgroup nodata_count";
-	}
-}
-
-
-
-
-my @common_headers2 = (			
 						'variant_samples',
 						'var_type',
 						'ref_base',
-						'var_base',
+						'var_base'
+						);
+
+
+#headers for reporting single cell type
+my @single_celltype_headers = (
+						'odds_ratio',
+						'z-score',
+						'CELLTYPE_variant_count',
+						'CELLTYPE_variant_freq',
+						'nocluster_variant_count',
+						'nocluster_variant_freq',
+						'CELLTYPE_vs_rest_freq_diff',
+						'total_portion_in_CELLTYPE'
+						);
+
+
+
+my @vep_headers = (			
+						'gene_name',
 						'ens_gene',
 						'ens_trans',
 						'dbsnp',
+						'gnomad_AF',
 						'gmaf',
-						'gnomad',
+						'variant_consequence',
 						'aa_change',
 						'poly_cat',
 						'poly_score',
 						'sift_cat',
 						'sift_score',
-						'cadd_phred',
-						'indel_consequence',
 						'domain',
 						'pubmed',
-						'clinical',
-						'priority_gene?',
-						'ensembl_link',
-						'ensembl_canonical_transcript',
-						'gene_name',
-						'cosmic',
-						'vogelstein_gene',
-						'uniprot',
-						'ccds',
-						'refseq',
-						'gene_desc',
-						'omim',
-						'go_term'
+						'clinical'
 						);
-
-
-my @all_headers = ();
-
-if ($vartrix_input) {
-	@all_headers = (@common_headers, @vartrix_headers, @common_headers2); 
-} elsif ($mb) {
-	if ($count_all) {
-		@all_headers = (@common_headers, @missionbio_headers_all, @common_headers2); 
-	} else {
-		@all_headers = (@common_headers, @missionbio_headers_short, @common_headers2);		
-	}
-} elsif ($group) {
-	@all_headers = (@common_headers, @group_headers, @common_headers2);
-} else {
-	@all_headers = (@common_headers,@common_headers2); 
-}
-
-
-
-#Get the index for the cut / sort command later
-my $sort_column = defined $OPT{sort_column}?$OPT{sort_column}:0;
-my $col_index = 0;
-
-if ($sort_column) {
-	my $sortcol = $OPT{sort_column};
-	for ( my $colcount = 0 ; $colcount < @all_headers ; $colcount++ ) {
-	    if ($all_headers[$colcount] eq $sortcol) {
-	    	$col_index = $colcount;
-	    }
-	}
-	
-	if ( $col_index == 0 ) {
-		modules::Exception->throw("ERROR: Couldn't find sort_column $sort_column\n");
-	}	
-}
-
-
-
-#Gene coord file is used for overlap variants -> vep isn't enough as not run on indels
-
-if ($OPT{gene_coord_file}) {
-	$gene_coord_file = $OPT{gene_coord_file};
-} else {
-	my $file = $ref . '.gene.overlap.all';
-	$gene_coord_file = $gene_dir . '/'.$file;
-}
-	
-if ( !-e $gene_coord_file ) {
-	modules::Exception->throw("File $gene_coord_file doesn't exist");	
-}
-
-#Build up command list
-my @commands = ();
-
-
-
-#Parse vcf
-push @commands, "$parse_vcf -vcf $vcf -keep_zyg -mean_var_freq -keep_allele_freq -out $outdir/$vcf_out";
-
-#Split by type (for vep input)
-push @commands, "grep SNV $outdir/$vcf_out > $outdir/$vcf_out.snv";
-push @commands, "grep -v SNV $outdir/$vcf_out > $outdir/$vcf_out.indel";
-
-
-#Generate VEP inputs for SNV/INS/DEL
-my $vep_in_command ="cat $outdir/$vcf_out.snv". ' | sed -e "s/:/ /g" -e "s/;/ /g" -e "s/->/ /" | awk \'{print $1,$2,$3,$7,$8,"+"}'."' > $outdir/vep.in"; 
-my $vep_indel_command1 = "cat $outdir/$vcf_out.indel". ' | grep DEL |  sed -e "s/:/ /g" -e "s/;/ /g" -e "s/-/ /g" | awk \'{print $1,$2,$3,$8,"-","+"}'."' > $outdir/vep.indel.in";
-my $vep_indel_command2 = "cat $outdir/$vcf_out.indel". ' | grep INS |  sed -e "s/:/ /g" -e "s/;/ /g" -e "s/+/ /g" -e "s/REF=//" | awk \'{print $1,$2,$3,$15,$15$7,"+"}'."' >> $outdir/vep.indel.in";
-push @commands, $vep_in_command, $vep_indel_command1, $vep_indel_command2;
-
-#Run VEP
-push @commands, "$vep_wrapper -vep_bin $svndir/ext/bin/vep -vep_in $outdir/vep.indel.in -all > $outdir/$vcf_out.vep.indel" unless $OPT{skip_vep};
-push @commands, "$vep_wrapper -vep_bin $svndir/ext/bin/vep -vep_in $outdir/vep.in > $outdir/$vcf_out.vep.exon" unless $OPT{skip_vep};
-push @commands, "$vep_wrapper -vep_bin $svndir/ext/bin/vep -vep_in $outdir/vep.in -all > $outdir/$vcf_out.vep.all" unless $OPT{skip_vep};
-
-
-#push @commands, "$overlap_bin -ref $outdir/$vcf_out -coord $gene_coord_file -just_overlap -all > $outdir/$vcf_out.gene_coord"; #Uses too much memory -> replace with per chr 
-#Gnomad and gene overlap needs to be split by chr
-for my $chr (@chrs) {
-	next if $chr eq 'Y';
-	if ($chr_filter =~ /[0-9X]/) {
-    	next unless $chr_filter eq $chr;
-  	}
-	
-	#Generate chr input to overlap coord 
-	push @commands, "grep -w ^$chr $outdir/$vcf_out.snv > $outdir/$vcf_out.snv.gnomad.$chr";
-	push @commands, "grep -w ^$chr $outdir/$vcf_out.indel > $outdir/$vcf_out.indel.gnomad.$chr";
-	push @commands, "grep -w ^$chr $outdir/$vcf_out > $outdir/$vcf_out.gene_coord.$chr";
-	
-	#Overlap with gnomad and genes
-	push @commands, "$overlap_bin -ref $outdir/$vcf_out.snv.gnomad.$chr -coord $gnomad_base.snv.$chr -just_overlap -all > $outdir/gnomad.snv.$chr";
-	push @commands, "$overlap_bin -ref $outdir/$vcf_out.indel.gnomad.$chr -coord $gnomad_base.indel.$chr -just_overlap -all > $outdir/gnomad.indel.$chr";
-	push @commands, "$overlap_bin -ref $outdir/$vcf_out.gene_coord.$chr -coord $gene_coord_file -just_overlap -all > $outdir/gene_coord.$chr";
-}
-
-#Clean up before
-push @commands, "rm -f $outdir/$vcf_out.gnomad $outdir/$vcf_out.gnomad $outdir/$vcf_out.gene_coord";
-
-#Generate whole genome files
-push @commands, "cat $outdir/gnomad.snv.* >> $outdir/$vcf_out.gnomad";
-push @commands, "cat $outdir/gnomad.indel.* >> $outdir/$vcf_out.gnomad";
-push @commands, "cat $outdir/gene_coord.* >> $outdir/$vcf_out.gene_coord";
-
-#Clean up tmp chr files
-push @commands, "rm -f $outdir/*gnomad.*"; 
-push @commands, "rm -f $outdir/*gene_coord.*";
-push @commands, "rm -f $outdir/$vcf_out.snv";
-push @commands, "rm -f $outdir/$vcf_out.indel";
-
-my $sys_call = modules::SystemCall->new();
-
-#Run the commands
-for my $command (@commands) {
-	print "$command\n";
-	`$command` unless $OPT{no_run};
-}
 
 
 #Now parse the files for the final report
 my @samples = ();
 
-open(VCF,"$vcf") || modules::Exception->throw("Can't open file\n");
+open(VCF,"$vcf_file") || Exception->throw("Can't open file $vcf_file\n");
 while (<VCF>) {
 	chomp;
 	next unless /^#CHROM/;
@@ -654,48 +376,131 @@ while (<VCF>) {
 		next if $field eq 'INFO';
 		next if $field eq 'FORMAT';
 		push @samples, $field;
+		if (!$cell_anno) {
+			#Just create a generic single cell type
+			$cellanno{$field} = 'Single_celltype';
+			$cellanno_counts{'Single_celltype'}++;
+		}
 	}
   last;
 }
 
-my $sample_count = @samples;
-my $max_nocall_count = defined $OPT{max_nocall_count}?$OPT{max_nocall_count}:$sample_count;
-my $min_sample_count = defined $OPT{min_sample_count}?$OPT{min_sample_count}:1;
-my $min_mean_af = defined $OPT{min_mean_af}?$OPT{min_mean_af}:0;
+#headers for reporting all celltypes
+my @all_celltype_headers = ();
 
-#Overwite default quality filters
-if (defined $OPT{high_quality}){
-	if ($mb) {
-		#For tapestri
-		$min_mean_af = 0.3;
-		$min_sample_count = 10;
-		$max_nocall_count = int($sample_count/2);
-	} else {
-		#For others (GTSeq/etc)
-		$min_mean_af = 0.1;
-		$min_sample_count = 2;
-		$max_nocall_count = 0.1*$sample_count;
+for my $celltype ( sort keys %cellanno_counts ) {
+	if ($specific_cell_type ne 'All') {
+		next unless $specific_cell_type eq $celltype;
 	}
+    push @all_celltype_headers, "$celltype var_count (het/hom)", "$celltype var_portion", "$celltype ref_count", "$celltype nodata_count";
 }
 
-#Single cell specific filters to check; set to -1 to account for 0 cases (use for MissionBio and 10X)
-my $sc_min_var = defined $OPT{sc_min_var}?$OPT{sc_min_var}:-1;
-my $sc_min_total = defined $OPT{sc_min_total}?$OPT{sc_min_total}:-1;      
-my $sc_min_portion = defined $OPT{sc_min_portion}?$OPT{sc_min_portion}:-1;
+my @all_headers = my @celltype_headers = ();
+if ($vep) {
+	@all_headers = (@common_headers, @all_celltype_headers, @vep_headers);
+	@celltype_headers = (@common_headers, @single_celltype_headers, @vep_headers);
+} else {
+	@all_headers = (@common_headers, @all_celltype_headers);
+	@celltype_headers = (@common_headers, @single_celltype_headers);
+}
 
+
+my $celltype_sort_column = defined $OPT{celltype_sort_column}?$OPT{celltype_sort_column}:'z-score';
+my $all_sort_column = defined $OPT{all_sort_column}?$OPT{all_sort_column}:'average_qual_per_sample';
+
+#Get the index for the sort command later
+my $col_index_all = 0;
+my $col_index_celltype = 0;
+
+
+for ( my $colcount = 0 ; $colcount < @celltype_headers ; $colcount++ ) {
+    if ($celltype_headers[$colcount] eq $celltype_sort_column) {
+	    	$col_index_celltype = $colcount;
+	}
+}
+if ( $col_index_celltype == 0 ) {
+	Exception->throw("ERROR: Couldn't find sort_column for celltype \n");
+}	
+
+for ( my $colcount = 0 ; $colcount < @all_headers ; $colcount++ ) {
+    if ($all_headers[$colcount] eq $all_sort_column) {
+	    	$col_index_all = $colcount;
+	}
+	
+}
+if ( $col_index_all == 0 ) {
+	Exception->throw("ERROR: Couldn't find sort_column for file\n");
+}	
+
+
+
+
+my $sample_count = @samples;
+
+
+#First check and parse the vcf
+if ($overwrite || !-e "$outdir/$vcf_out") {
+	print STDERR "Normalising vcf...\n";
+	$vcf->check_vcf(-vcf_file=>$vcf_file);
+	$vcf->parse_vcf(-vcf_file=>$vcf_file);
+	$vcf->write_normalised(-vcf_file=>$vcf_file,-vcf_out=>"$outdir/$vcf_out");
+}
+
+#Build up command list
+my @commands = ();
+
+
+if ($vep) {
+	#Split by type (for vep input)
+	push @commands, "grep SNV $outdir/$vcf_out > $outdir/$vcf_out.snv";
+	push @commands, "grep -v SNV $outdir/$vcf_out > $outdir/$vcf_out.indel";
+	#Generate VEP inputs for SNV/INS/DEL
+	my $vep_in_command ="cat $outdir/$vcf_out.snv". ' | sed -e "s/:/ /g" -e "s/;/ /g" -e "s/->/ /" | awk \'{print $1,$2,$3,$7,$8,"+"}'."' > $outdir/vep.in"; 
+	my $vep_indel_command1 = "cat $outdir/$vcf_out.indel". ' | grep DEL |  sed -e "s/:/ /g" -e "s/;/ /g" -e "s/-/ /g" | awk \'{print $1,$2,$3,$8,"-","+"}'."' > $outdir/vep.indel.in";
+	my $vep_indel_command2 = "cat $outdir/$vcf_out.indel". ' | grep INS |  sed -e "s/:/ /g" -e "s/;/ /g" -e "s/+/ /g" -e "s/REF=//" | awk \'{print $1,$2,$3,$14,$14$7,"+"}'."' >> $outdir/vep.indel.in";
+	push @commands, $vep_in_command, $vep_indel_command1, $vep_indel_command2;
+	
+	
+	if ($overwrite) {
+		push @commands, "$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/vep.indel.in -all > $outdir/$vcf_out.vep.indel";
+		push @commands, "$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/vep.in > $outdir/$vcf_out.vep.exon";
+		push @commands, "$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/vep.in -all > $outdir/$vcf_out.vep.all";
+	} else {
+		if (!-e "$outdir/$vcf_out.vep.indel") {
+			push @commands, "$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/vep.indel.in -all > $outdir/$vcf_out.vep.indel";
+		}
+		if (!-e "$outdir/$vcf_out.vep.exon") {
+			push @commands, "$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/vep.in > $outdir/$vcf_out.vep.exon";
+		}
+		if (!-e "$outdir/$vcf_out.vep.all") {
+			push @commands,"$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/vep.in -all > $outdir/$vcf_out.vep.all"
+		}
+		
+	}
+	push @commands, "rm -f $outdir/$vcf_out.snv";
+	push @commands, "rm -f $outdir/$vcf_out.indel";
+}
+
+
+
+#Run the commands
+for my $command (@commands) {
+	print "$command\n";
+	`$command` unless $OPT{no_run};
+}
 
 my %data = ();
 
-open(PARSED,"$outdir/$vcf_out") || modules::Exception->throw("Can't open file $outdir/$vcf_out\n");
+open(PARSED,"$outdir/$vcf_out") || Exception->throw("Can't open file $outdir/$vcf_out\n");
 
 my $line_count = 0;
-#vartrix doesn't report variant base so need to record it
-my %vartrix_lookup = ();
 
 #multiple allele handling for counting
 my %mult_allele = ();
 my %total_alleles = (); #Use for generating average score per variant cell
 
+
+print STDERR "Parsing vcf...\n";
 while (<PARSED>) {
     $_ =~ s/^chr//;
 	chomp;
@@ -722,9 +527,7 @@ while (<PARSED>) {
 	my $key = "$chr:$start:$end:$var_base";
 	
 	
-	if ($vartrix_input) {
-		$vartrix_lookup{"$chr:$start"} = $key;
-	}
+
 	$data{$key}{var_type} = $var_type;
 	$data{$key}{ref} = $ref_base;
 	$data{$key}{var} = $var_base; 
@@ -732,7 +535,7 @@ while (<PARSED>) {
 	$data{$key}{mean_af} = $mean_af =~ /\d/?$mean_af:'N/A';
 	$data{$key}{median_af} = $median_af =~ /\d/?$median_af:'N/A';
 	$data{$key}{total_ac} = $var_allele_total;
-	$data{$key}{var_read_count} = $var_read_count; 
+
 	my $zyg = "N/A";
 	my $sample;
 
@@ -742,7 +545,7 @@ while (<PARSED>) {
 		$sample = defined $samples[$count]?$samples[$count]:0; #Mutect doesn't list samples
 		
 		#Don't count if sample not included (except with controls or count_all flag)
-		if (keys %samples && !keys %controls && !$count_all) {
+		if (keys %samples && !keys %controls) {
 			next unless exists $samples{$sample} ;
 		}
 		
@@ -752,24 +555,24 @@ while (<PARSED>) {
 		} elsif ($geno_fields[0] =~ /\|/) {
 			($allele1,$allele2) = split('\|',$geno_fields[0]);
 		} else {
-			#modules::Exception->throw("ERROR: Can't handle genotype $geno_fields[0]\n");
+			#Exception->throw("ERROR: Can't handle genotype $geno_fields[0]\n");
 			next;
 		}
 		if ($allele1 eq '0' && $allele2 eq '0') {
 			$zyg = 'ref';
 			$data{$key}{ref_count}++;
-			$data{$key}{groups}{$groups{$sample}}{ref_count}++ if $group;
+			$data{$key}{celltype}{$cellanno{$sample}}{ref_count}++;
 		} elsif ($geno_fields[0] eq './.' || $geno_fields[0] eq '.|.') {
 			$zyg = 'no_call';
 			$data{$key}{no_data_count}++;
-			$data{$key}{groups}{$groups{$sample}}{nodata_count}++ if $group;
+			$data{$key}{celltype}{$cellanno{$sample}}{nodata_count}++;
 		} elsif ($allele1 == $allele2) {
 			if ($allele1 == $zyg_count) {
 				$zyg = 'hom';
 				$data{$key}{hom_count}++;
 				$data{$key}{var_count}++;
-				$data{$key}{groups}{$groups{$sample}}{var_count}++ if $group;
-				$data{$key}{groups}{$groups{$sample}}{hom_count}++ if $group;
+				$data{$key}{celltype}{$cellanno{$sample}}{var_count}++;
+				$data{$key}{celltype}{$cellanno{$sample}}{hom_count}++;
 				if ($sample) {
 					push @{$data{$key}{var_samples}},$sample;
 					$sample_varcount{$sample}++;
@@ -780,15 +583,15 @@ while (<PARSED>) {
 				$zyg = 'het';
 				$data{$key}{het_count}++;
 				$data{$key}{var_count}++;
-				$data{$key}{groups}{$groups{$sample}}{var_count}++ if $group;
-				$data{$key}{groups}{$groups{$sample}}{het_count}++ if $group;
+				$data{$key}{celltype}{$cellanno{$sample}}{var_count}++;
+				$data{$key}{celltype}{$cellanno{$sample}}{het_count}++;
 				if ($sample) {
 					push @{$data{$key}{var_samples}},$sample;
 					$sample_varcount{$sample}++;
 				}
 			} 
 		}  else {
-			modules::Exception->throw("ERROR with $genotypes[$count]\n");
+			Exception->throw("ERROR with $genotypes[$count]\n");
 		}
 		
 		$data{$key}{zyg}{$sample} = $zyg;
@@ -809,211 +612,108 @@ while (<PARSED>) {
   }
 }
 
-print "Parsed vcf...\n";
+print STDERR "Parsed vcf...\n";
 
 
-open(VEPINDEL,"$outdir/$vcf_out.vep.indel") || modules::Exception->throw("Can't open file $outdir/$vcf_out.vep.indel\n");
-
-while (<VEPINDEL>) {
-    $_ =~ s/^chr//;
-    next unless /^[0-9XY]+\s/;
-    
-    chomp;
-    my @fields = split("\t");
-    my $key = $fields[0].':'.$fields[1].':'.$fields[2] .':'.$fields[4];
-    
-    
-    if ($chr_filter =~ /[0-9X]/) {
-        next unless $fields[0] eq $chr_filter;
-    }
-    if (!exists $data{$key}) {
-    	modules::Exception->throw("ERROR: Key $key doesn't exist\n");
-    	next;
-    }
-    $data{$key}{rs} = $fields[5];
-    $data{$key}{gmaf} = $fields[6];
-    $data{$key}{domain} = $fields[7];
-    $data{$key}{pubmed} = $fields[8];
-    $data{$key}{clin} = $fields[9];
-    $data{$key}{exon_str} = $fields[10]; 
-    $data{$key}{ens_gene} = $fields[11];
-    $data{$key}{ens_trans} = $fields[12];
-    #Handle old veps w/o CADD
-    if ($fields[13] && $fields[13] =~ /_/) {
-	    $data{$key}{indel_result} = $fields[13];
-    }
-    
-}
-
-open(VEPALL,"$outdir/$vcf_out.vep.all") || modules::Exception->throw("Can't open file $outdir/$vcf_out.vep.all\n");
-
-while (<VEPALL>) {
-    $_ =~ s/^chr//;
-    next unless /^[0-9XY]+\s/;
-    
-    chomp;
-    my @fields = split("\t");
-    my $key = $fields[0].':'.$fields[1].':'.$fields[1] .':'.$fields[4];
-    
-    
-    if ($chr_filter =~ /[0-9X]/) {
-        next unless $fields[0] eq $chr_filter;
-    }
-    if (!exists $data{$key}) {
-    	next;
-    	#modules::Exception->throw("ERROR: Key $key doesn't exist\n");
-    }
-    $data{$key}{rs} = $fields[5];
-    $data{$key}{gmaf} = $fields[6];
-    $data{$key}{domain} = $fields[7];
-    $data{$key}{pubmed} = $fields[8];
-    $data{$key}{clin} = $fields[9];
-    $data{$key}{exon_str} = $fields[10]; 
-    $data{$key}{ens_gene} = $fields[11];
-    $data{$key}{ens_trans} = $fields[12];
-    #Handle old veps w/o CADD
-    if ($fields[14] && $fields[14] =~ /\d/) {
-	    $data{$key}{cadd_phred} = $fields[14];
-    }
-    
-}
-
-
-#print Dumper \%data;
-
-open(VEPEXON,"$outdir/$vcf_out.vep.exon") || modules::Exception->throw("Can't open file $outdir/$vcf_out.vep.exon\n");
-
-while (<VEPEXON>) {
-    $_ =~ s/^chr//;
-    next unless /^[0-9XY]+\s/;
-    chomp;
-    my @fields = split("\t");
-    my $key = $fields[0].':'.$fields[1].':'.$fields[1] .':'.$fields[4];
-    if ($chr_filter =~ /[0-9X]/) {
-      	next unless $chr_filter eq $fields[0];
-   	}
-	if (!exists $data{$key}) {
-    	next;
-    	#modules::Exception->throw("ERROR: Key $key doesn't exist\n");
-    }
-    my ($poly_score) = $fields[9] =~ /([0-9\.]+)/;
-    my ($sift_score) = $fields[11] =~ /([0-9\.]+)/;
-    
-    $data{$key}{aa_change} = $fields[5];
-    $data{$key}{ens_gene} = $fields[6];
-    $data{$key}{ens_trans} = $fields[7];
-    $data{$key}{poly_cat} = $fields[8];
-    $data{$key}{poly_score} = $poly_score;
-	$data{$key}{sift_cat} = $fields[10];
-    $data{$key}{sift_score} = $sift_score;
-	#Handle old veps w/o CADD
-    if ($fields[12] && $fields[12] =~ /\d/) {
-	    $data{$key}{cadd_phred} = $fields[12];
-    }
-}
-
-
-
-
-print "Parsed VEP...\n";
-
-open(GENE,"$outdir/$vcf_out.gene_coord") || modules::Exception->throw("Can't open file\n");
-
-while (<GENE>) {
-    chomp;
-    $_ =~ s/^chr//;
-    my @fields = split;
-    if ($chr_filter =~ /[0-9X]/) {
-    	next unless $chr_filter eq $fields[0];
-    }
-
-    my @annos = split(';',$fields[3]);
-    my $var_base;
-    my $ens_gene;
-    
-    if ($fields[-1] =~ /(ENSG\d+)/) {
-    	$ens_gene = $1;
-    } elsif ($fields[-1] == 1) {
-    	$ens_gene = 'NO_GENE';
-    } else {
-    	modules::Exception->throw("ERROR: Can't have no gene entry $_\n");
-    }
-    
-    if ($annos[0] eq 'SNV') {
-    	($var_base) = $annos[1] =~ /->([ACTG])/;
-    } elsif ($annos[0] eq 'DEL') {
-    	($var_base) = $annos[1] =~ /(\-[ATGC]+)/;
-    } elsif ($annos[0] eq 'INS') {
-    	($var_base) = $annos[1] =~ /(\+[ATGC]+)/;
-    }
-    my $key = $fields[0].':'.$fields[1].':'.$fields[2].':'.$var_base;
-    
-	if (!exists $data{$key}) {
-    	modules::Exception->throw("ERROR: Key $key doesn't exist\n");
-    }
-    if (!exists $data{$key}{ens_gene}) {
-	    $data{$key}{ens_gene} = $ens_gene;
-    }
-    
-}
-
-open(GNOMAD,"$outdir/$vcf_out.gnomad") || modules::Exception->throw("Can't open file\n");
-
-while (<GNOMAD>) {
-    chomp;
- 	$_ =~ s/^chr//;
-    my @fields = split("\t");
-    if ($chr_filter =~ /[0-9X]/) {
-      next unless $chr_filter eq $fields[0];
-    }
-
-    my @annos = split(';',$fields[3]);
-    my $var_base;
-    if ($annos[0] eq 'SNV') {
-    	($var_base) = $annos[1] =~ /->([ACTG])/;
-    } elsif ($annos[0] eq 'DEL') {
-    	($var_base) = $annos[1] =~ /(\-[ATGC]+)/;
-    } elsif ($annos[0] eq 'INS') {
-    	($var_base) = $annos[1] =~ /(\+[ATGC]+)/;
-    }
-    my $key = $fields[0].':'.$fields[1].':'.$fields[2].':'.$var_base;
-    if (!exists $data{$key}) {
-    	modules::Exception->throw("ERROR: Key $key doesn't exist\n");
-    }
-    my $match = $fields[-1] eq '1'?'NO_GNOMAD':$fields[-1];
-    $data{$key}{gnomad} = $match;
-    $data{$key}{gnomad} =~ s/^\d+://;
-}
-close GNOMAD;
-
-print "Parsed GNOMAD...\n";
-
-if ($vartrix_input) {
-	open(VARTRIX,"$vartrix_summary") || modules::Exception->throw("Can't open file $vartrix_summary\n");
-
-	while (<VARTRIX>) {
-		chomp;
-		next unless $_ =~ /:/;
-		$_ =~ s/"//g;
-		$_ =~ s/^chr//;
-		my @fields = split("\t");
-		my ($chr,$coord) = split(':',$fields[0]);
-		if ($chr_filter =~ /[0-9X]/) {
-	      next unless $chr_filter eq $chr;
-	    }
+if ($vep) {
+	open(VEPINDEL,"$outdir/$vcf_out.vep.indel") || Exception->throw("Can't open file $outdir/$vcf_out.vep.indel\n");
+	
+	while (<VEPINDEL>) {
+	    $_ =~ s/^chr//;
+	    next unless /^[0-9XY]+\s/;
+	    
+	    chomp;
+	    my @fields = split("\t");
+	    my $key = $fields[0].':'.$fields[1].':'.$fields[2] .':'.$fields[4];
 	    
 	    
-	    if (exists $vartrix_lookup{"$chr:$coord"}) {
-		    my $key = $vartrix_lookup{"$chr:$coord"};
-		   
-		    $data{$key}{sc_nd} = $fields[1];
-		    $data{$key}{sc_ref} = $fields[2];
-		    $data{$key}{sc_variants} = $fields[3] + $fields[4] . ' ( '. $fields[5] .'% )';
+	    if ($chr_filter =~ /[0-9X]/) {
+	        next unless $fields[0] eq $chr_filter;
 	    }
+	    if (!exists $data{$key}) {
+	    	Exception->throw("ERROR: Key $key doesn't exist\n");
+	    	next;
+	    }
+	    $data{$key}{rs} = $fields[5];
+	    $data{$key}{gmaf} = $fields[6];
+	    $data{$key}{domain} = $fields[7];
+	    $data{$key}{pubmed} = $fields[8];
+	    $data{$key}{clin} = $fields[9];
+	    $data{$key}{exon_str} = $fields[10]; 
+	    $data{$key}{ens_gene} = $fields[11];
+	    $data{$key}{ens_trans} = $fields[12];
+	    $data{$key}{cadd_phred} = $fields[13];
+	    $data{$key}{var_consequence} = $fields[14];
+	    $data{$key}{gnomad_af} = $fields[15];
+	    $data{$key}{genename} = $fields[16];
 	}
+	
+	open(VEPALL,"$outdir/$vcf_out.vep.all") || Exception->throw("Can't open file $outdir/$vcf_out.vep.all\n");
+	
+	while (<VEPALL>) {
+	    $_ =~ s/^chr//;
+	    next unless /^[0-9XY]+\s/;
+	    
+	    chomp;
+	    my @fields = split("\t");
+	    my $key = $fields[0].':'.$fields[1].':'.$fields[1] .':'.$fields[4];
+	    
+	    
+	    if ($chr_filter =~ /[0-9X]/) {
+	        next unless $fields[0] eq $chr_filter;
+	    }
+	    if (!exists $data{$key}) {
+	    	#next;
+	    	Exception->throw("ERROR: Key $key doesn't exist\n");
+	    }
+	    $data{$key}{rs} = $fields[5];
+	    $data{$key}{gmaf} = $fields[6];
+	    $data{$key}{domain} = $fields[7];
+	    $data{$key}{pubmed} = $fields[8];
+	    $data{$key}{clin} = $fields[9];
+	    $data{$key}{exon_str} = $fields[10]; 
+	    $data{$key}{ens_gene} = $fields[11];
+	    $data{$key}{ens_trans} = $fields[12];
+	    $data{$key}{ens_trans} = $fields[12];
+	    $data{$key}{cadd_phred} = $fields[13];
+	    $data{$key}{var_consequence} = $fields[14];
+	    $data{$key}{gnomad_af} = $fields[15];
+	    $data{$key}{genename} = $fields[16];
+	}
+	
+	
+	#print Dumper \%data;
+	
+	open(VEPEXON,"$outdir/$vcf_out.vep.exon") || Exception->throw("Can't open file $outdir/$vcf_out.vep.exon\n");
+	
+	while (<VEPEXON>) {
+	    $_ =~ s/^chr//;
+	    next unless /^[0-9XY]+\s/;
+	    chomp;
+	    my @fields = split("\t");
+	    my $key = $fields[0].':'.$fields[1].':'.$fields[1] .':'.$fields[4];
+	    if ($chr_filter =~ /[0-9X]/) {
+	      	next unless $chr_filter eq $fields[0];
+	   	}
+		if (!exists $data{$key}) {
+	    	next;
+	    	#Exception->throw("ERROR: Key $key doesn't exist\n");
+	    }
+	    my ($poly_score) = $fields[9] =~ /([0-9\.]+)/;
+	    my ($sift_score) = $fields[11] =~ /([0-9\.]+)/;
+	    
+	    $data{$key}{aa_change} = $fields[5];
+	    $data{$key}{ens_gene} = $fields[6];
+	    $data{$key}{ens_trans} = $fields[7];
+	    $data{$key}{poly_cat} = $fields[8];
+	    $data{$key}{poly_score} = $poly_score;
+		$data{$key}{sift_cat} = $fields[10];
+	    $data{$key}{sift_score} = $sift_score;
+	}
+	print STDERR "Parsed VEP...\n";
 }
 
-
+#print Dumper $data{'X:41343232:41343232:'}
 
 
 my $out = defined $OPT{outfile}?"$outdir/".$OPT{outfile}:"$outdir/${vcf_out}.annotated.tsv";
@@ -1023,118 +723,134 @@ if ($out !~ /tsv$/) {
 }
 
 (my $out_short = $out) =~ s/.tsv//;
-my $out_priority = $out_short . '_rare_missense_nonsense.tsv';
 
-my $sample_count_file = $out_short."_sample_varcount.tsv";
-my $sample_group_count = $out_short."_group_count.tsv";
-my $sample_group_count_priority = $out_short."_rare_missense_nonsense_group_count.tsv";
-my $plot_gene_pdf = $out_short."_rare_missense_nonsense_gene_plots.pdf";
-my $var_sample_count = $out_short."_variant_samplelist.tsv";
+my $sample_count_file = $out_short."_sample_variant_totals.tsv";
+my $sample_group_count = $out_short."_variantcount_by_celltype.tsv";
+my $plot_gene_pdf = $out_short."_priority_gene_plots.pdf";
 
-
-open(VARCOUNT,">$sample_count_file") || modules::Exception->throw("Can't open file to write $sample_count_file \n");
-open(GROUP,">$sample_group_count") || modules::Exception->throw("Can't open file to write $sample_group_count \n") if $group;
-open(GROUPPRIORITY,">$sample_group_count_priority") || modules::Exception->throw("Can't open file to write $sample_group_count_priority \n") if $group;
-open(GENES_RSCRIPT,">${out_short}_gene_plot.R") || modules::Exception->throw("Can't open gene plot R script") if $plot; 
-open(VARSAMPLE,">$var_sample_count") || modules::Exception->throw("Can't open file $var_sample_count\n");
-
-
-if ($group) {
-	print GROUP join("\t","Coord",sort keys %group_counts) ."\n";
-	print GROUPPRIORITY join("\t","Coord",sort keys %group_counts) ."\n";
-	if ($plot) {
-		print GENES_RSCRIPT join("\n",
-								"library(dplyr)",
-								"library(ggplot2)",
-								"library(tidyr)",
-								'pdf(file="'.$plot_gene_pdf.'")'
-								) . "\n";
-								
-		for my $r_gene (sort keys %genes_to_plot) {
-			print GENES_RSCRIPT $r_gene.' <- read.csv2("'.$r_gene.'_cell_count.tsv", header=TRUE,sep="\t")'."\n";
-			my $font_size = 5;
-			if ($r_gene eq 'KMT2D') {
-				$font_size = 1;
-			}
-			print GENES_RSCRIPT $r_gene.' %>% pivot_longer(-Coord,names_to="type") %>% ggplot(aes(Coord,value,fill=type)) + geom_col() + coord_cartesian(ylim=c(0,20)) + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,size='.$font_size.')) + ggtitle("'.$r_gene. ' Range_to_20")'."\n";
-			print GENES_RSCRIPT $r_gene.' %>% pivot_longer(-Coord,names_to="type") %>% ggplot(aes(Coord,value,fill=type)) + geom_col() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,size='.$font_size.')) + ggtitle("'.$r_gene. ' Full_Range")'."\n";
-		}
-		print GENES_RSCRIPT "dev.off()\n";
-	}
-    print VARCOUNT join("\t",
-    						"Sample",
-    						"Varcount",
-    						"Group"
-    						) . "\n";
-} else {
-    print VARCOUNT join("\t",
-    						"Sample",
-    						"Varcount"
-    						) . "\n";
-}
+#File containing number of variants per clone
+open(VARCOUNT,">$sample_count_file") || Exception->throw("Can't open file to write $sample_count_file \n");
+print VARCOUNT join("\t",
+    					"Sample",
+    					"Varcount",
+    					"Celltype"
+    					) . "\n";
 
 
 for my $sample ( keys %sample_varcount ) {
-    if ($group) {
     	print VARCOUNT join("\t",
     							$sample,
     							$sample_varcount{$sample},
-    							$groups{$sample}
-    							) . "\n";
-    } else {
-    	print VARCOUNT join("\t",
-    							$sample,
-    							$sample_varcount{$sample}
-    							) . "\n";
-    }
+    							$cellanno{$sample}
+    						) . "\n";
+}
+
+#Contains variant count divided by group; write headers
+open(GROUP,">$sample_group_count") || Exception->throw("Can't open file to write $sample_group_count \n");
+print GROUP join("\t","Coord",sort keys %cellanno_counts) ."\tSamples\n";
+
+#Same as above but only for priority variants (vep included)
+if ($vep) {
+	my $sample_group_count_priority = $out_short."_variantcount_by_celltype_priority.tsv";
+	open(GROUPPRIORITY,">$sample_group_count_priority") || Exception->throw("Can't open file to write $sample_group_count_priority \n");
+	print GROUPPRIORITY join("\t","Coord",sort keys %cellanno_counts) ."\n";
 }
 
 
-open(OUT,">$out") || modules::Exception->throw("Can't open file to write\n");
-open(PRIORITY,">$out_priority") || modules::Exception->throw("Can't open file to write $out_priority\n");
-
-my @fhs = (*OUT,*PRIORITY);
-
-
-for my $fh ( @fhs ) {
-	print $fh join("\t",@all_headers) ."\t";
-}
-
-#Create matrix; count cluster members / non-members
-my $cluster_count = my $noncluster_count = 0;
-
-if ($mb) {
-	my $mb_out = $out_short . '_tapestri.tsv';
-	open(MB,">$mb_out") || modules::Exception->throw("Can't open file $mb_out\n");
-	for my $sample (@samples) {
-		if (exists $samples{$sample}) {
-			$cluster_count++;
-		} else {
-			$noncluster_count++;
-		}
+#If gene plot templates are needed
+if ($plot) {
+	open(GENES_RSCRIPT,">${out_short}_gene_plot.R") || Exception->throw("Can't open gene plot R script") if $plot; 
+	print GENES_RSCRIPT join("\n",
+							"library(dplyr)",
+							"library(ggplot2)",
+							"library(tidyr)",
+							'pdf(file="'.$plot_gene_pdf.'")'
+							) . "\n";
+								
+	for my $r_gene (sort keys %genes_to_plot) {
+		print GENES_RSCRIPT $r_gene.' <- read.csv2("'.$r_gene.'_cell_count.tsv", header=TRUE,sep="\t")'."\n";
+		my $font_size = 5;
+		
+		print GENES_RSCRIPT $r_gene.' %>% pivot_longer(-Coord,names_to="type") %>% ggplot(aes(Coord,value,fill=type)) + geom_col() + coord_cartesian(ylim=c(0,20)) + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,size='.$font_size.')) + ggtitle("'.$r_gene. ' Range_to_20")'."\n";
+		print GENES_RSCRIPT $r_gene.' %>% pivot_longer(-Coord,names_to="type") %>% ggplot(aes(Coord,value,fill=type)) + geom_col() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,size='.$font_size.')) + ggtitle("'.$r_gene. ' Full_Range")'."\n";
 	}
+		print GENES_RSCRIPT "dev.off()\n";
+    
+}
+
+
+#File for all variants
+open(OUT,">$out") || Exception->throw("Can't open file to write\n");
+
+my @all_fhs = (*OUT);
+
+#Create priority file if VEP annotations exist
+if ($vep) {
+	my $out_priority = $out_short . '_priority.tsv';
+	open(PRIORITY,">$out_priority") || Exception->throw("Can't open file to write $out_priority\n");
+	push @all_fhs,\*PRIORITY;
+}
+
+#Print the headers for the full variant files
+for my $fh ( @all_fhs ) {
+	print $fh join("\t",@all_headers) ."\n\n";
+}
+
+#Create all the output files and file handles
+my %celltype_fhs = ();
+my %celltype_fhs_priority = ();
+
+for my $celltype ( keys %cellanno_counts ) {
+	if ($specific_cell_type ne 'All') {
+		next unless $specific_cell_type eq $celltype;
+	}
+	my $celltype_out =  $out_short.'_'.$celltype.'.tsv';
+	local *FILE;
+	open(FILE,">$celltype_out") || modules::Exception->throw("Can't open file $celltype_out\n");
+	push @{$celltype_fhs{$celltype}}, *FILE;
+	
+	if ($vep) {
+		my $celltype_priority =  $out_short.'_'.$celltype.'_priority.tsv';
+		local *PRIORITY;
+		open(PRIORITY,">$celltype_priority") || modules::Exception->throw("Can't open file $celltype_priority\n");
+		push @{$celltype_fhs_priority{$celltype}}, *PRIORITY;
+	}   
 }
 
 
 
-if ($incl_zyg) {
-	for my $fh ( @fhs ) {
-		print $fh "\t";
-		print $fh join("\t",@samples);
+#Update headers for each file handle
+for my $celltype ( keys %celltype_fhs ) {
+	for my $fh (@{$celltype_fhs{$celltype}}) {
+		my @specific_celltype_headers = ();
+		for my $col (@celltype_headers) {
+			(my $local_col = $col) =~ s/CELLTYPE/$celltype/;
+			push @specific_celltype_headers, $local_col;
+		}
+		print $fh join("\t",@specific_celltype_headers) ."\n\n";
+		
 	}
 	
-} 
+}
 
-if ($mb) {
-	print MB join("\t",
+
+
+
+
+#Matrix that can be input to R for further analysis
+my $mb_out = $out_short . '_tapestri.tsv';
+open(MB,">$mb_out") || Exception->throw("Can't open file $mb_out\n");
+
+print MB join("\t",
 				"ID",
 				@samples
 				) ."\n";
-}
 
-for my $fh ( @fhs ) {
-	print $fh "\n\n";
-}
+
+#Store all the data to write to the various files sorted by the relevant columns
+my %all_files_to_write = ();
+my %celltype_files_to_write = ();
+
 
 my @keys = sort { my ($a_chr,$a_coord) = $a =~ /([0-9X]+):(\d+)/; my ($b_chr,$b_coord) = $b =~ /([0-9X]+):(\d+)/; $a_chr cmp $b_chr || $a_coord <=> $b_coord } keys(%data);
 
@@ -1143,7 +859,8 @@ for my $key (@keys) {
 	if ($chr_filter =~ /[0-9X]/) {
     		next unless $chr_filter eq $chr;
   	}
-
+  	#Flag to decide whether to print to the 'all' file
+	my $print_all = 1;
   	next unless $chr =~ /^[0-9X]/;
 	my $aa_change = exists $data{$key}{aa_change}?$data{$key}{aa_change}:'NO_AA_CHANGE';
 	my $ens_trans = exists $data{$key}{ens_trans}?$data{$key}{ens_trans}:'NO_ENS_TRANS';
@@ -1152,63 +869,127 @@ for my $key (@keys) {
 	my $poly_score = exists $data{$key}{poly_score}?$data{$key}{poly_score}:'NO_POLY_SCORE';
 	my $sift_cat = exists $data{$key}{sift_cat}?$data{$key}{sift_cat}:'NO_SIFT_CAT';
 	my $sift_score = exists $data{$key}{sift_score}?$data{$key}{sift_score}:'NO_SIFT_SCORE';
-	my $cadd_phred = exists $data{$key}{cadd_phred}?$data{$key}{cadd_phred}:'NO_CADD_SCORE';
-	my $indel_result = exists $data{$key}{indel_result}?$data{$key}{indel_result}:'N/A';
-	my $gnomad = exists $data{$key}{gnomad}?$data{$key}{gnomad}:'NO_GNOMAD';
-	my $domain = !exists $data{$key}{domain} || $data{$key}{domain} eq 'N/A'?'NO_DOMAIN':$data{$key}{domain};
-	my $pubmed = !exists $data{$key}{pubmed} || $data{$key}{pubmed} eq 'N/A'?'NO_PUBMED':$data{$key}{pubmed};
-	my $clin = !exists $data{$key}{clin} || $data{$key}{clin} eq 'N/A'?'NO_CLIN':$data{$key}{clin};
 	my $rs = !exists $data{$key}{rs} || $data{$key}{rs} eq 'N/A'?'NO_DBSNP':$data{$key}{rs};
 	my $gmaf = !exists $data{$key}{gmaf} || $data{$key}{gmaf} eq 'N/A'?'NO_GMAF':$data{$key}{gmaf};	
 	my $var_mean_af = !exists $data{$key}{mean_af} || $data{$key}{mean_af} eq 'N/A'?'NO_MEAN_AF':$data{$key}{mean_af};	
 	my $var_median_af = !exists $data{$key}{median_af} || $data{$key}{median_af} eq 'N/A'?'NO_MEDIAN_AF':$data{$key}{median_af};	
 	my $var_read_count = !exists $data{$key}{var_read_count} || $data{$key}{var_read_count} eq 'N/A'?'NO_VAR_READ_COUNT': $data{$key}{var_read_count};
-	
-	
-	
+	my $domain = !exists $data{$key}{domain} || $data{$key}{domain} eq 'N/A'?'NO_DOMAIN':$data{$key}{domain};
+	my $pubmed = !exists $data{$key}{pubmed} || $data{$key}{pubmed} eq 'N/A'?'NO_PUBMED':$data{$key}{pubmed};
+	my $clin = !exists $data{$key}{clin} || $data{$key}{clin} eq 'N/A'?'NO_CLIN':$data{$key}{clin};
+	my $gnomad = !exists $data{$key}{gnomad_af} || $data{$key}{gnomad_af} eq 'N/A'?'NO_GNOMAD':$data{$key}{gnomad_af};
+	my $genename = !exists $data{$key}{genename} || $data{$key}{genename} eq 'N/A'?'NO_GENENAME':$data{$key}{genename};
+	my $var_consequence = !exists $data{$key}{var_consequence} || $data{$key}{var_consequence} eq 'N/A'?'NO_VARIANT_CONSEQUENCE':$data{$key}{var_consequence};
 	my $var_samples;
+	
+	#Find samples involved 
 	if (!exists $data{$key}{var_samples}) {
+		#Rare case with nested variant events
 		$var_samples = "Complex overlapping event";
 	} elsif (@{$data{$key}{var_samples}} > 100) {
+		#Don't list more than 100 samples in the report
 		$var_samples = ">100 samples";
 	} else {
 		$var_samples = join(",",@{$data{$key}{var_samples}});
 	}
 	
 	
-	
+	#Total variant stats
 	my $het_count = exists $data{$key}{het_count}?$data{$key}{het_count}:0;
 	my $hom_count = exists $data{$key}{hom_count}?$data{$key}{hom_count}:0;
 	my $ref_count = exists $data{$key}{ref_count}?$data{$key}{ref_count}:0;
 	my $nd_count = exists $data{$key}{no_data_count}?$data{$key}{no_data_count}:0;
+	my $data_count = $het_count + $hom_count + $ref_count;
+	my $data_portion = sprintf("%.2f",$data_count/($nd_count+$data_count));
+	
 	my $var_count = 0;
 	if (exists $data{$key}{var_count}) {
 		$var_count =  $data{$key}{var_count};
 	}
 	
-	my @group_numbers = ();
-	my @group_vars = ();
-	if ($group) {
-		for my $localgroup ( sort keys %group_counts ) {
-	    	#push @group_headers, "$group var_count", "$group ref_count", "$group nodata_count";
-	    	if (!exists $data{$key}{groups}{$localgroup}) {
-	    		push @group_numbers, 0, 0, 0;
-	    		push @group_vars,0;
-	    	} else {
-	    		my $group_var_count = defined $data{$key}{groups}{$localgroup}{var_count}?$data{$key}{groups}{$localgroup}{var_count}:0;
-	    		my $group_het_count = defined $data{$key}{groups}{$localgroup}{het_count}?$data{$key}{groups}{$localgroup}{het_count}:0;
-	    		my $group_hom_count = defined $data{$key}{groups}{$localgroup}{hom_count}?$data{$key}{groups}{$localgroup}{hom_count}:0;
-	    		my $group_ref_count = defined $data{$key}{groups}{$localgroup}{ref_count}?$data{$key}{groups}{$localgroup}{ref_count}:0;
-	    		my $group_nodata_count = defined $data{$key}{groups}{$localgroup}{nodata_count}?$data{$key}{groups}{$localgroup}{nodata_count}:0;
-				my $group_var_percent = $var_count == 0?'0':sprintf("%.2f",$group_var_count/$var_count *100);
-	    		push @group_numbers, $group_var_count ." (${group_var_percent}%) (${group_het_count}/${group_hom_count})", $group_ref_count, $group_nodata_count;
-	    		push @group_vars,$group_var_count;
-	    	}
+	my @celltype_columns = ();
+	my %celltype_stats = ();
+	my @celltype_vars = ();
+	for my $celltype ( sort keys %cellanno_counts ) {
+		if ($specific_cell_type ne 'All') {
+			next unless $specific_cell_type eq $celltype;
 		}
-		print GROUP join("\t", $key,@group_vars) . "\n";
+    	#push @group_headers, "$group var_count", "$group ref_count", "$group nodata_count";
+    	if (!exists $data{$key}{celltype}{$celltype}) {
+    		push @celltype_columns, 0, 0, 0, 0;
+    		push @celltype_vars,0;
+    	} else {
+    		my $celltype_var_count = defined $data{$key}{celltype}{$celltype}{var_count}?$data{$key}{celltype}{$celltype}{var_count}:0;
+    		my $celltype_het_count = defined $data{$key}{celltype}{$celltype}{het_count}?$data{$key}{celltype}{$celltype}{het_count}:0;
+    		my $celltype_hom_count = defined $data{$key}{celltype}{$celltype}{hom_count}?$data{$key}{celltype}{$celltype}{hom_count}:0;
+    		my $celltype_ref_count = defined $data{$key}{celltype}{$celltype}{ref_count}?$data{$key}{celltype}{$celltype}{ref_count}:0;
+    		my $celltype_nodata_count = defined $data{$key}{celltype}{$celltype}{nodata_count}?$data{$key}{celltype}{$celltype}{nodata_count}:0;
+    		my $celltype_data_count = $celltype_var_count+$celltype_ref_count;
+			my $celltype_var_portion = $celltype_data_count != 0?sprintf("%.4f",$celltype_var_count/$celltype_data_count):0;
+
+    		
+    		my $other_varcount = $var_count - $celltype_var_count;
+    		my $other_ref_count = $ref_count - $celltype_ref_count;
+    		
+    		
+    		my $other_varportion = $data_count - $celltype_data_count != 0?sprintf("%.4f",($var_count - $celltype_var_count)/($data_count - $celltype_data_count)):0;
+
+    		$celltype_stats{$celltype}{$key}{varcount} = $celltype_var_count;
+    		$celltype_stats{$celltype}{$key}{varportion} = $celltype_var_portion;
+    		$celltype_stats{$celltype}{$key}{datacount} = $celltype_data_count;
+    		$celltype_stats{$celltype}{$key}{other_varcount} = $other_varcount;
+    		$celltype_stats{$celltype}{$key}{other_varportion} =  $other_varportion;
+    		$celltype_stats{$celltype}{$key}{portion_diff} = abs($other_varportion-$celltype_var_portion);
+    		my $portion_in_cluster = $var_count != 0?sprintf("%.2f",$celltype_var_count/$var_count):0;
+    		$celltype_stats{$celltype}{$key}{portion_in_cluster} = $portion_in_cluster;
+    		
+    		my $odds_ratio = my $zscore = 'N/A';
+    		
+    		if ($other_varcount == 0) {
+    			$odds_ratio = 'N/A (SOMATIC TO '.$celltype.')';
+    		} elsif ($celltype_var_count == 0) {
+    			$odds_ratio = 'N/A (NOT IN '.$celltype.')';
+    		} elsif ($celltype_ref_count == 0) {
+    			$odds_ratio = 'N/A (NO REF IN '.$celltype.')';
+    		} elsif ($other_ref_count == 0) {
+    			$odds_ratio = 'N/A (NO REF IN OTHER)';
+    		} else {
+    			$odds_ratio = sprintf("%.2f",($celltype_var_count/$celltype_ref_count)/($other_varcount/$other_ref_count));
+	    		
+	    		#SE of OR
+	    		my $sum_to_OR = 0;
+	    		if ($celltype_var_count >0) {
+	    			$sum_to_OR += 1/$celltype_var_count;
+	    		}
+	    		if ($celltype_ref_count >0) {
+	    			$sum_to_OR += 1/$celltype_ref_count;
+	    		}
+	    		if ($other_varcount >0) {
+	    			$sum_to_OR += 1/$other_varcount;
+	    		}
+	    		if ($other_ref_count >0) {
+	    			$sum_to_OR += 1/$other_ref_count;
+	    		}
+	    		
+	    		my $standard_OR = sqrt($sum_to_OR);
+	    		#95% upper CI
+	    		my $CI_lower = $odds_ratio*exp(-1.96*$standard_OR);
+	    		#Zscore
+	    		$zscore = sprintf("%.2f",log($odds_ratio)/(log($odds_ratio)-log($CI_lower))/1.96);
+    		} 
+    		$celltype_stats{$celltype}{$key}{zscore} = $zscore;
+    		$celltype_stats{$celltype}{$key}{odds_ratio} = $odds_ratio;
+	
+    		push @celltype_columns, $celltype_var_count ." (${celltype_het_count}/${celltype_hom_count})", $celltype_var_portion, $celltype_ref_count, $celltype_nodata_count;
+    		push @celltype_vars,$celltype_var_count;
+    	}
 	}
+	
+	#print Dumper \%celltype_stats;
+	
+	
 	my $var_str = $var_count . '('.$het_count . '/'. $hom_count .')';
-	my $average_score = 'COMPLEX EVENT';
+	my $average_score = 'N/A';
 
 	my $alleles_key = "$chr:$start:$end";
 
@@ -1225,69 +1006,65 @@ for my $key (@keys) {
 		
 	}
 	
-	#Records samples per variant for upset plots / etc -> needed as we don't report >100 samples in the reports
-	if (!exists $data{$key}{var_samples}) {
-		print VARSAMPLE join ("\t",
-								$key,
-								"COMPLEX_EVENT"
-								) ."\n";
-	} else {
-		print VARSAMPLE join ("\t",
-								$key,
-								join(",",@{$data{$key}{var_samples}})
-								) ."\n";
-		
-	}
-	
-	
-	
 	#Start filtering here
+	
 	#If below min_mean_af
-	if ($var_mean_af =~ /\d/ && $min_mean_af > $var_mean_af) {
-		next;
+	if ($var_mean_af =~ /\d/ && $var_mean_af <= $min_allelefreq_mean_total) {
+		$print_all = 0;
 	}
 	
-	if ($nd_count > $max_nocall_count) {
-		next;
+	if ($data_count <= $min_datacount_total) {
+		$print_all = 0;
 	}
 	
-	if (exists $data{$key}{var_count} && $min_sample_count > $data{$key}{var_count}) {
-		next;
+	if (exists $data{$key}{var_count} && $data{$key}{var_count} < $min_varcount_total) {
+		$print_all = 0;
+	}
+	
+	
+	if (exists $data{$key}{var_count}) {
+		my $var_portion = sprintf("%.4f",$var_count/$data_count);
+		if ($var_portion <= $min_varportion_total) {
+			$print_all = 0;
+		}
+	}
+	
+	if ($data{$key}{qual} <= $min_total_qual) {
+		$print_all = 0;
+	}
+	
+	if ($average_score <= $min_total_persample_qual) {
+		$print_all = 0;
+	}
+	
+	if ($data_portion <= $min_dataportion_total) {
+		$print_all = 0;
 	}
 	
 	#Only keep rare nonsense/missense/frameshift
 	my $priority_flag = 1;
 	
-	if ($aa_change eq 'NO_AA_CHANGE') {
-		$priority_flag = 0 unless $indel_result =~ /frameshift/ || $indel_result =~ /stop_gained/;
-	} 
-	
-	if ($gmaf =~ /\d/) {
-		if ($gmaf > $rare_cutoff) {
-			$priority_flag = 0;
-		}
-	} 
-	
-	if ($gnomad =~ /\d/) {
-		my @fields = split(':',$gnomad);
-		if ($fields[1] > $rare_cutoff) {
-			$priority_flag = 0;
+	if ($vep) {
+		if ($aa_change eq 'NO_AA_CHANGE') {
+			$priority_flag = 0 unless $var_consequence =~ /frameshift/ || $var_consequence =~ /stop_gained/;
 		} 
-	} 
-	
-	
-	
-	my @anno = exists $gene_anno{$ens_gene}?@{$gene_anno{$ens_gene}}:@no_anno_line;
-	
-	my $gene_name = $anno[2];
-	my $priority_gene = 'NO';
-	
-	if (exists $priority_genes{$gene_name}) {
-		$priority_gene = 'YES';
+		
+		if ($gmaf =~ /\d/) {
+			if ($gmaf > $rare_cutoff) {
+				$priority_flag = 0;
+			}
+		} 
+		
+		if ($gnomad =~ /\d/) {
+			if ($gnomad > $rare_cutoff) {
+				$priority_flag = 0;
+			}
+		} 
+		
 	}
 	
 	
-	#Here we filter for specific samples
+	#Here we filter for specific samples; 
 	if (keys %samples) {
 		my $report = 0;
 		for my $var_sample ( @{$data{$key}{var_samples}} ) {
@@ -1301,7 +1078,7 @@ for my $key (@keys) {
 	}
 	
 	#Now we check if it's somatic
-	if ($somatic) {
+	if ($only_somatic) {
 		my $somatic = 1;
 		for my $var_sample ( @{$data{$key}{var_samples}} ) {
 			#Here we found the variant in at least once control sample so don't keep report it
@@ -1319,6 +1096,7 @@ for my $key (@keys) {
 				$control = 1;
 			}
 		}
+		
 		#Skip as found in control
 		next unless $control == 0;
 		
@@ -1326,12 +1104,13 @@ for my $key (@keys) {
 		my $sample_include_count = 0;
 		
 		for my $var_sample ( @{$data{$key}{var_samples}} ) {
-			#Here we found the variant if at least once required sample
+			#Here we found the variant if at least one required sample
 			if (exists $samples{$var_sample}) {
 				$sample_include_count++;
 			}
 		}
-		if ($min_sample_count > $sample_include_count) {
+		
+		if ($min_varcount_total > $sample_include_count) {
 			next;
 		}
 	}
@@ -1344,284 +1123,171 @@ for my $key (@keys) {
 		$sift_score = 'N/A';
 	}
 	
-	print OUT join("\t",
-						$chr,
-						$start,
-						$end,
-						$data{$key}{qual},
-						$average_score,
-						$var_str,
-						$ref_count,
-						$nd_count,
-						$var_mean_af,
-						$var_median_af,
-						$var_read_count
-						) ."\t";
+	#Here all filters have been applied so store results to print
+	print GROUP join("\t", $key,@celltype_vars,$var_samples) . "\n";
+	print GROUPPRIORITY join("\t", $key,@celltype_vars,$var_samples) . "\n" if $priority_flag;
 	
-	if ($priority_flag) {
-				print PRIORITY join("\t",
-									$chr,
-									$start,
-									$end,
-									$data{$key}{qual},
-									$average_score,
-									$var_str,
-									$ref_count,
-									$nd_count,
-									$var_mean_af,
-									$var_median_af,
-									$var_read_count) ."\t";
-	}
-	
+	my @first_alllines = ($chr,$start,$end,$data{$key}{qual},$average_score,$var_str,$ref_count,$nd_count,$var_mean_af,$var_median_af,$var_samples,$data{$key}{var_type},$data{$key}{ref},$var_base);
+	my @last_alllines = ($genename,$ens_gene,$ens_trans,$rs,$gnomad,$gmaf,$var_consequence,$aa_change,$poly_cat,$poly_score,$sift_cat,$sift_score,$domain,$pubmed,$clin);
+		
 	#Here we divide variants into cluster and non-cluster
-	if ($mb) {
+	if ($cell_anno) {
 		
 		#New MB variables needed;  set defaults to account to few complex overlapping cases...	
-		my $cluster_freq = 'N/A';
-		my $noncluster_freq = 'N/A';
-		my $cluster_var_str = 'N/A';
-		my $noncluster_var_str = 'N/A';
+		my $cluster_var_portion = 'N/A';
+		my $noncluster_var_portion = 'N/A';
+		my $cluster_var_count = 'N/A';
+		my $noncluster_var_count = 'N/A';
 		my $diff = 'N/A';
+		my $OR = 'N/A';
+		my $zscore = 'N/A';
 		my $portion_cluster = 'N/A';
+		my $celltype_datacount = 'N/A';
 		
-		#Check we're running it with -sample_flag or -priority_sample_flag (without just gives N/A's)
-		if (exists $data{$key}{var_samples} && keys %samples) {
-			my $cluster_var_count = my $noncluster_var_count = 0;
-			for my $variant_sample	(@{$data{$key}{var_samples}}) {
-				if (exists $samples{$variant_sample}) {
-					$cluster_var_count++;
-				} else {
-					$noncluster_var_count++;
+		for my $celltype (sort keys %celltype_stats) {
+			my $celltype_printall = 1;
+			my $celltype_priority = 1;		
+			
+			$cluster_var_count = $celltype_stats{$celltype}{$key}{varcount} if $celltype_stats{$celltype}{$key}{varcount} =~ /\d/;
+    		$cluster_var_portion = $celltype_stats{$celltype}{$key}{varportion} if $celltype_stats{$celltype}{$key}{varportion} =~ /\d/;
+    		$noncluster_var_count = $celltype_stats{$celltype}{$key}{other_varcount} if $celltype_stats{$celltype}{$key}{other_varcount} =~ /\d/;
+    		$noncluster_var_portion = $celltype_stats{$celltype}{$key}{other_varportion} if $celltype_stats{$celltype}{$key}{other_varportion} =~ /\d/;
+    		$diff = $celltype_stats{$celltype}{$key}{portion_diff} if $celltype_stats{$celltype}{$key}{portion_diff}  =~ /\d/;
+    		$portion_cluster = $celltype_stats{$celltype}{$key}{portion_in_cluster}  if $celltype_stats{$celltype}{$key}{portion_in_cluster} =~ /\d/;
+			$celltype_datacount = $celltype_stats{$celltype}{$key}{datacount} if $celltype_stats{$celltype}{$key}{datacount} =~ /\d/;
+    		$zscore = $celltype_stats{$celltype}{$key}{zscore} if $celltype_stats{$celltype}{$key}{zscore} =~ /\d/;
+			$OR = $celltype_stats{$celltype}{$key}{odds_ratio} if $celltype_stats{$celltype}{$key}{odds_ratio} =~ /\S/;
+			
+			#Apply filters
+			if ($cluster_var_count !~ /N\/A/ && $min_varcount_celltype >= $cluster_var_count) {
+				$celltype_printall = 0;
+			} 	
+			
+			if ($cluster_var_portion !~ /N\/A/ && $min_varportion_celltype > $cluster_var_portion) {
+				$celltype_printall = 0;
+			}
+			
+			if ($celltype_datacount !~ /N\/A/ && $min_datacount_celltype >= $celltype_datacount) {
+				$celltype_printall = 0;
+			}
+			
+			
+			#Apply filters
+			if ($zscore !~ /N\/A/ && $zscore < $zscore_cutoff) {
+				$celltype_priority = 0;
+			}
+			
+			if ($OR =~ /N\A/ && $OR !~ /SOMATIC/) {
+				$celltype_priority = 0;
+			}
+			
+			if ($OR !~ /N\/A/ && $OR < $odds_ratio_cutoff) {
+				$celltype_priority = 0;
+			}
+			
+			#Here every read is variant 
+			if ($ref_count == 0) {
+				$celltype_priority = 0;
+			}
+
+
+			if ($celltype_printall) {
+				my @full_line = ();
+				my @celltype_specific = ();
+				push @celltype_specific, $OR, $zscore, $cluster_var_count, $cluster_var_portion, $noncluster_var_count, $noncluster_var_portion, $diff, $portion_cluster;
+				@full_line = (@first_alllines,@celltype_specific,@last_alllines);
+				push @{$celltype_files_to_write{$celltype}{'all'}},join ("\t",@full_line);
+				
+				#Check this passes both sets of filters
+				if ($celltype_priority && $priority_flag) {
+					push @{$celltype_files_to_write{$celltype}{'priority'}},join("\t",@full_line);
 				}
-			}
 				
-			$cluster_var_str = $cluster_var_count .' / '.$cluster_count;
-			$noncluster_var_str = $noncluster_var_count .' / '.$noncluster_count;
-			$cluster_freq = $cluster_count>0?sprintf("%.3f",$cluster_var_count/$cluster_count):0;
-			$noncluster_freq = $noncluster_count>0?sprintf("%.3f",$noncluster_var_count/$noncluster_count):0;
-			$diff = $cluster_freq - $noncluster_freq;
-			$portion_cluster = sprintf("%.2f",$cluster_var_count/$var_count);
-		} 
-			
-		if ($count_all) {
-			print OUT join("\t",
-						$cluster_var_str,
-						$cluster_freq,
-						$noncluster_var_str,
-						$noncluster_freq,
-						$diff,
-						$portion_cluster
-						) . "\t";
-				
-			if ($priority_flag) {
-				print PRIORITY join("\t",
-									$cluster_var_str,
-									$cluster_freq,
-									$noncluster_var_str,
-									$noncluster_freq,
-									$diff,
-									$portion_cluster
-									) . "\t";
-			
 			}
+			
+			
+			
+		}
+	}  
+
+
+	my @full_alllines = (@first_alllines,@celltype_columns,@last_alllines);
+	push @{$all_files_to_write{'all'}}, join("\t",@full_alllines) if $print_all;
+	
+	
+	if ($vep && $priority_flag) {
+		push @{$all_files_to_write{'priority'}},join("\t",@full_alllines) if $print_all;
+	}
+
+	 
+	
+	
+	
+	
+	my @mb_values = ();	
+	push @mb_values, $key;
+	for my $sample (@samples) {
+		my $zyg = '?';
+		if (defined $data{$key}{zyg}{$sample}) {
+			$zyg = $data{$key}{zyg}{$sample};
+		}
+		
+		if (exists $mb_map{$zyg}) {
+			push @mb_values, $mb_map{$zyg};
 		} else {
-			print OUT join("\t",
-						$cluster_var_str,
-						$cluster_freq,
-						) . "\t";
-				
-			if ($priority_flag) {
-				print PRIORITY join("\t",
-									$cluster_var_str,
-									$cluster_freq,
-									) . "\t";
-			}
+			push @mb_values, "?";
 		}
-	} elsif ($vartrix_input) {
-		my $sc_nd = defined $data{$key}{sc_nd}?$data{$key}{sc_nd}:"N/A";
-		my $sc_ref = defined $data{$key}{sc_ref}?$data{$key}{sc_ref}:"N/A";
-		my $sc_var = defined $data{$key}{sc_variants}?$data{$key}{sc_variants}:"N/A";
-		
-		#Skip filters for unreported SC variants 
-		if ($sc_nd ne 'N/A') {
-			
-			my ($sc_var_num,$sc_var_percent) = $sc_var =~ /(\d+).*\(\s(\d+)/; 
-			my $sc_var_portion =  sprintf("%.2f",$sc_var_percent / 100);
-			#print "SC num $sc_var_num / SC percent $sc_var_percent / SC portion $sc_var_portion\n";
-			my $sc_total = $sc_var_num + $sc_ref;
-
-			if ($sc_total <= $sc_min_total) {
-				next;
-			}
-			
-			if ($sc_var_num <= $sc_min_var) {
-				next;
-			}
-			
-			if ($sc_var_portion <= $sc_min_portion) {
-				next;
-			}
-			
-		}
-		 
-		 
-		 print OUT join("\t",
-						$sc_nd,
-						$sc_ref,
-						$sc_var,
-						) . "\t";
-				
-			if ($priority_flag) {
-				print PRIORITY join("\t",
-									$sc_nd,
-									$sc_ref,
-									$sc_var,
-									) . "\t";
-			}
-	} elsif ($group) {
-		 print OUT join("\t",
-		 					@group_numbers
-		 					) . "\t";
-		 if ($priority_flag) {		
-		 	print PRIORITY join("\t",
-		 						@group_numbers
-		 						) ."\t";
-		 }		
-		 
 	}
-		
-	print OUT join("\t",
-						$var_samples,
-						$data{$key}{var_type},
-						$data{$key}{ref},
-						$var_base,
-						$ens_gene,
-						$ens_trans,
-						$rs,
-						$gmaf,
-						$gnomad,
-						$aa_change,
-						$poly_cat,
-						$poly_score,
-						$sift_cat,
-						$sift_score,
-						$cadd_phred,
-						$indel_result,
-						$domain,
-						$pubmed,
-						$clin,
-						$priority_gene,
-						@anno
-						);
-						
-	if ($priority_flag) {
-		if ($group) {
-			my $group_key = $key;
-			if ($aa_change ne 'NO_AA_CHANGE') {
-				$group_key .= ":$gene_name:$aa_change";
-			} else {
-				$group_key .= ":$gene_name:$indel_result";
-			}
-			print GROUPPRIORITY join("\t", $group_key,@group_vars) . "\n";
-					
-			
-			
-		}
-			print PRIORITY join("\t",
-								$var_samples,
-								$data{$key}{var_type},
-								$data{$key}{ref},
-								$var_base,
-								$ens_gene,
-								$ens_trans,
-								$rs,
-								$gmaf,
-								$gnomad,
-								$aa_change,
-								$poly_cat,
-								$poly_score,
-								$sift_cat,
-								$sift_score,
-								$cadd_phred,
-								$indel_result,
-								$domain,
-								$pubmed,
-								$clin,
-								$priority_gene,
-								@anno
-								);
-	}
-	
-	
-	if ($mb) {
-		my @mb_values = ();	
-		push @mb_values, $key;
-		for my $sample (@samples) {
-			my $zyg = '?';
-			if (defined $data{$key}{zyg}{$sample}) {
-				$zyg = $data{$key}{zyg}{$sample};
-			}
-			
-			if (exists $mb_map{$zyg}) {
-				push @mb_values, $mb_map{$zyg};
-			} else {
-				push @mb_values, "?";
-			}
-		}
-		print MB join("\t",
-					@mb_values
-					) ."\n"
-	}
-			
-	if ($incl_zyg) {
-		print OUT "\t";
-		print PRIORITY "\t" if $priority_flag;
-		my @sample_zyg;
-		for my $sample (@samples) {
-			my $zyg = '?';
-			if (defined $data{$key}{zyg}{$sample}) {
-				$zyg = $data{$key}{zyg}{$sample};
-			}
-			push @sample_zyg, $zyg;
-		}
-		print OUT join("\t",@sample_zyg);
-		print PRIORITY join("\t",@sample_zyg) if $priority_flag;
-	}
-	
-	print OUT "\n";			
-	print PRIORITY "\n" if $priority_flag;			
+	print MB join("\t",
+				@mb_values
+				) ."\n"
 }
 
 
-#Lastly make sorted files
-if ($sort_column) {
-	my $out_priority_sorted = $out_short . '_rare_missense_nonsense_sorted.tsv';
-	my $out_sorted = $out_short . '_sorted.tsv';
-	my $header = $out_short . '_tmp1.tsv';
-	my $col_index_end = $col_index + 1;
-	my $tab = "'\t\'";
-	my $command1 = "head -2 $out > $header; cat $out | grep -v ^chr | sort -t${tab} +${col_index}nr -${col_index_end}nr > ${out_short}_tmp2.tsv; rm -f $out_sorted; cat $header ${out_short}_tmp2.tsv >> $out_sorted";
-	
-	print "$command1\n";
-	`$command1`;
 
-	my $command2 = "cat $out_priority | grep -v ^chr | sort -t${tab} +${col_index}nr -${col_index_end}nr > ${out_short}_tmp2.tsv; rm -f $out_priority_sorted; cat $header ${out_short}_tmp2.tsv >> $out_priority_sorted; rm -f $header; rm -f ${out_short}_tmp2.tsv";
+#Write the files for all variants; sort the lines by numerical descending
+my @all_lines = sort {my @afields = split("\t",$a); my @bfields = split("\t",$b); $bfields[$col_index_all] <=> $afields[$col_index_all]} @{$all_files_to_write{'all'}};
+print OUT join ("\n",@all_lines);
+
+if ($vep) {
+	my @priority_lines = sort {my @afields = split("\t",$a); my @bfields = split("\t",$b); $bfields[$col_index_all] <=> $afields[$col_index_all]} @{$all_files_to_write{'priority'}};
+  	print PRIORITY join ("\n",@priority_lines);
+}
+
+#Write the files for each celltype
+if ($cell_anno) {
 	
-	print "$command2\n";
-	`$command2`;
+	for my $celltype ( keys %celltype_files_to_write ) {
+	    my @celltype_all_lines = sort {my @afields = split("\t",$a); my @bfields = split("\t",$b); $bfields[$col_index_celltype] <=> $afields[$col_index_celltype]} @{$celltype_files_to_write{$celltype}{'all'}};
+	    
+	    for my $fh (@{$celltype_fhs{$celltype}}) {
+		    print $fh join ("\n",@celltype_all_lines);
+	    }
+	    
+	    if ($vep) {
+	    	#Only create the file if there are entries
+	    	if (exists $celltype_files_to_write{$celltype}{'priority'}) {
+	    		#First the headers
+	    		for my $fh (@{$celltype_fhs_priority{$celltype}}) {
+					my @specific_celltype_headers = ();
+					for my $col (@celltype_headers) {
+						(my $local_col = $col) =~ s/CELLTYPE/$celltype/;
+						push @specific_celltype_headers, $local_col;
+					}
+					print $fh join("\t",@specific_celltype_headers) ."\n\n";
+				}
+	    		#then add the sorted data
+		    	my @celltype_priority_lines = sort {my @afields = split("\t",$a); my @bfields = split("\t",$b); $bfields[$col_index_celltype] <=> $afields[$col_index_celltype]} @{$celltype_files_to_write{$celltype}{'priority'}};
+		    	for my $fh (@{$celltype_fhs_priority{$celltype}}) {
+			    	print $fh join ("\n",@celltype_priority_lines);
+	    		}
+	    		
+	    	}
+	    }
+	}
 	
 }
 
-
-#Get the latest directory based on formats DDMMYY
-sub GetLatest {
-	my ($name) = @_;
-	opendir(DIR,"$conf_dir/$name/") || modules::Exception->throw("ERROR: Cannot open directory $conf_dir/$name/");
-	my @files = grep {/^\d/} readdir DIR;
-	closedir DIR;
-	my ($dir_tmp) = reverse(sort {my ($aday,$amonth,$ayear) = $a =~ /(\d\d)(\d\d)(\d\d)/; my ($bday,$bmonth,$byear) = $b =~ /(\d\d)(\d\d)(\d\d)/; $ayear<=>$byear||$amonth<=>$bmonth||$aday<=>$bday} @files);
-	return "$conf_dir/$name/$dir_tmp";
-}
 
 
 

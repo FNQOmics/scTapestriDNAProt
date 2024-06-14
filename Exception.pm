@@ -86,7 +86,7 @@ handling methods.
 
 =cut
 
-package modules::Exception;
+package Exception;
 
 use strict;
 use warnings;
@@ -132,7 +132,7 @@ sub throw {
   #Root function now deprecated so call will have the string instead.
 
   $string = shift if(ref($string)); #skip object if one provided
-  $string = shift if($string eq "modules::Exception");
+  $string = shift if($string eq "Exception");
 
   my $level  = shift;
 
@@ -173,7 +173,7 @@ sub throw {
 
 sub warning {
   my $string = shift;
-  $string = shift if($string eq "modules::Exception"); #skip object if one provided
+  $string = shift if($string eq "Exception"); #skip object if one provided
   my $level  = shift;
 
    $level = $DEFAULT_WARNING if(!defined($level));
@@ -237,7 +237,7 @@ sub warning {
 
 sub info {
   my $string = shift;
-  $string = shift if($string eq "modules::Exception");
+  $string = shift if($string eq "Exception");
   my $level  = shift;
 
   $level = $DEFAULT_INFO if(!defined($level));
@@ -297,7 +297,7 @@ sub info {
 sub verbose {
   if(@_) {
     my $verbosity = shift;
-    $verbosity = shift if($verbosity eq "modules::Exception");
+    $verbosity = shift if($verbosity eq "Exception");
     if($verbosity =~ /\d+/) { #check if verbosity is an integer
       $VERBOSITY = $verbosity;
     } else {
@@ -348,7 +348,7 @@ sub stack_trace_dump{
 
   my $levels = 2; #default is 2 levels so stack_trace_dump call is not present
   $levels = shift if(@_);
-  $levels = shift if($levels eq "modules::Exception");
+  $levels = shift if($levels eq "Exception");
   $levels = 1 if($levels < 1);
   
   while($levels) {
@@ -424,7 +424,7 @@ my %DEPRECATED;
 
 sub deprecate {
   my $mesg = shift;
-  $mesg = shift if($mesg eq "modules::Exception"); #skip object if one provided
+  $mesg = shift if($mesg eq "Exception"); #skip object if one provided
 
   my $level = shift;
 

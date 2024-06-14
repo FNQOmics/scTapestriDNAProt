@@ -1,0 +1,4 @@
+vep_args_exon,--force_overwrite --cache --offline --species homo_sapiens --fork 4 --canonical --coding_only --poly b --sift b 
+vep_args_all,--force_overwrite --cache --offline --species homo_sapiens --fork 4 --canonical --domains --af --pubmed --check_existing --numbers --biotype --regulatory --af_gnomad --symbol
+vep_bin,/drive2/codebase/ext/bin/vep
+vep_db,/drive2/codebase/conf/human/GRCh38/vep_index
