@@ -16,24 +16,24 @@ use Cwd 'abs_path';
 GetOptions(\%OPT, 
 	   "help|h",
 	   "man|m",
-	   "vcf_in=s",
-	   "outdir=s",
-	   "outfile=s",
-	   "cell_annotation_file=s",
-	   "cell_type=s",
-	   "annotate_conf=s",
-	   "min_varcount_total=i",
-	   "min_varcount_celltype=i",
-	   "min_varportion_total=s",
+	   "vcf_in=s",#tested
+	   "outdir=s",#tested
+	   "outfile=s",#tested
+	   "cell_annotation_file=s",#tested
+	   "cell_type=s",#tested
+	   "annotate_conf=s", #tested
+	   "min_varcount_total=i", #tested
+	   "min_varcount_celltype=i", #tested
+	   "min_varportion_total=s", #tested
 	   "min_varportion_celltype=s",
 	   "min_datacount_total=i",
 	   "min_datacount_celltype=i",
 	   "min_dataportion_total=s",
-	   "min_allelefreq_mean_total=s",
+	   "min_allelefreq_mean_total=s",#tested
 	   "min_odds_ratio=s",
        "zscore_cutoff=s",
 	   "only_somatic",
-	   "no_run",
+	   "no_run", #tested
 	   "sample_file=s",
 	   "control_file=s",
        "chr=s",
@@ -42,7 +42,7 @@ GetOptions(\%OPT,
        "plot_genes=s",
        "rare_cutoff=s",
        "odds_ratio_cutoff=s",
-       "overwrite"
+       "overwrite" #tested
    );
 
 pod2usage(-verbose => 2) if $OPT{man};
@@ -716,13 +716,17 @@ if ($vep) {
 #print Dumper $data{'X:41343232:41343232:'}
 
 
-my $out = defined $OPT{outfile}?"$outdir/".$OPT{outfile}:"$outdir/${vcf_out}.annotated.tsv";
+my $out = defined $OPT{outfile}?"$outdir/".$OPT{outfile}:"$outdir/${vcf_out}.all.annotated.tsv";
 
 if ($out !~ /tsv$/) {
 	$out .= '.tsv';
 }
 
+
+
 (my $out_short = $out) =~ s/.tsv//;
+
+$out =~ s/.tsv/_all.tsv/;
 
 my $sample_count_file = $out_short."_sample_variant_totals.tsv";
 my $sample_group_count = $out_short."_variantcount_by_celltype.tsv";
@@ -786,7 +790,7 @@ my @all_fhs = (*OUT);
 
 #Create priority file if VEP annotations exist
 if ($vep) {
-	my $out_priority = $out_short . '_priority.tsv';
+	my $out_priority = $out_short . '_all_priority.tsv';
 	open(PRIORITY,">$out_priority") || Exception->throw("Can't open file to write $out_priority\n");
 	push @all_fhs,\*PRIORITY;
 }
@@ -1009,11 +1013,11 @@ for my $key (@keys) {
 	#Start filtering here
 	
 	#If below min_mean_af
-	if ($var_mean_af =~ /\d/ && $var_mean_af <= $min_allelefreq_mean_total) {
+	if ($var_mean_af =~ /\d/ && $var_mean_af <  $min_allelefreq_mean_total) {
 		$print_all = 0;
 	}
 	
-	if ($data_count <= $min_datacount_total) {
+	if ($data_count <  $min_datacount_total) {
 		$print_all = 0;
 	}
 	
@@ -1024,20 +1028,20 @@ for my $key (@keys) {
 	
 	if (exists $data{$key}{var_count}) {
 		my $var_portion = sprintf("%.4f",$var_count/$data_count);
-		if ($var_portion <= $min_varportion_total) {
+		if ($var_portion <  $min_varportion_total) {
 			$print_all = 0;
 		}
 	}
 	
-	if ($data{$key}{qual} <= $min_total_qual) {
+	if ($data{$key}{qual} <  $min_total_qual) {
 		$print_all = 0;
 	}
 	
-	if ($average_score <= $min_total_persample_qual) {
+	if ($average_score <  $min_total_persample_qual) {
 		$print_all = 0;
 	}
 	
-	if ($data_portion <= $min_dataportion_total) {
+	if ($data_portion <  $min_dataportion_total) {
 		$print_all = 0;
 	}
 	
@@ -1159,15 +1163,15 @@ for my $key (@keys) {
 			$OR = $celltype_stats{$celltype}{$key}{odds_ratio} if $celltype_stats{$celltype}{$key}{odds_ratio} =~ /\S/;
 			
 			#Apply filters
-			if ($cluster_var_count !~ /N\/A/ && $min_varcount_celltype >= $cluster_var_count) {
+			if ($cluster_var_count !~ /N\/A/ && $cluster_var_count < $min_varcount_celltype ) {
 				$celltype_printall = 0;
 			} 	
 			
-			if ($cluster_var_portion !~ /N\/A/ && $min_varportion_celltype > $cluster_var_portion) {
+			if ($cluster_var_portion !~ /N\/A/ && $cluster_var_portion < $min_varportion_celltype) {
 				$celltype_printall = 0;
 			}
 			
-			if ($celltype_datacount !~ /N\/A/ && $min_datacount_celltype >= $celltype_datacount) {
+			if ($celltype_datacount !~ /N\/A/ && $celltype_datacount < $min_datacount_celltype ) {
 				$celltype_printall = 0;
 			}
 			
