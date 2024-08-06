@@ -16,24 +16,24 @@ use Cwd 'abs_path';
 GetOptions(\%OPT, 
 	   "help|h",
 	   "man|m",
-	   "vcf_in=s",#tested
-	   "outdir=s",#tested
-	   "outfile=s",#tested
-	   "cell_annotation_file=s",#tested
-	   "cell_type=s",#tested
-	   "annotate_conf=s", #tested
-	   "min_varcount_total=i", #tested
-	   "min_varcount_celltype=i", #tested
-	   "min_varportion_total=s", #tested
+	   "vcf_in=s",
+	   "outdir=s",
+	   "outfile=s",
+	   "cell_annotation_file=s",
+	   "cell_type=s",
+	   "annotate_conf=s", 
+	   "min_varcount_total=i", 
+	   "min_varcount_celltype=i", 
+	   "min_varportion_total=s", 
 	   "min_varportion_celltype=s",
 	   "min_datacount_total=i",
 	   "min_datacount_celltype=i",
 	   "min_dataportion_total=s",
-	   "min_allelefreq_mean_total=s",#tested
-	   "min_odds_ratio=s",
+	   "min_allelefreq_mean_total=s",
+	   "min_totalportion_celltype=s",
        "zscore_cutoff=s",
 	   "only_somatic",
-	   "no_run", #tested
+	   "no_run", 
 	   "sample_file=s",
 	   "control_file=s",
        "chr=s",
@@ -41,8 +41,10 @@ GetOptions(\%OPT,
        "all_sort_column=s",
        "plot_genes=s",
        "rare_cutoff=s",
-       "odds_ratio_cutoff=s",
-       "overwrite" #tested
+       "skip_vep",
+       "odds_ratio_cutoff=s", 
+       "overwrite", 
+       "debug"
    );
 
 pod2usage(-verbose => 2) if $OPT{man};
@@ -68,13 +70,13 @@ tapestri.pl
 	-min_dataportion_total minimum_portion_total_samples_with_variant
 	-min_total_qual minimum_total_quality_score
 	-min_total_persample_qual minimum_persample_quality_score
-	-min_odds_rario min_odds_ratio_to_include
 	-min_allelefreq_mean_total min_AF_average_total_cutoff
+	-min_totalportion_celltype min_total_portion_of_variants_in_allsample
 	-only_somatic only_celltype_specific_variants
 	-no_run list_commands_and_just_generate_report 
 	-sample_file run_for_sample_subset
 	-control_file for_mixed_datasets_where_specific_controls_are_needed 
-	-celltype_sort_column columnname_to_sortby_in_celltype_files(assumes_numerical_descending,default=odds_ratio)
+	-celltype_sort_column columnname_to_sortby_in_celltype_files(assumes_numerical_descending,default=zscore)
 	-all_sort_column columnname_to_sortby_in_all_files(assumes_numerical_descending,default=average_qual_per_sample)
 	-chr run_for_chr 
 	-plot_genes file_of_genes_to_plot(requires_vep_for_priority_variants)
@@ -82,6 +84,8 @@ tapestri.pl
 	-odds_ratio_cutoff cutoff_for_oddsratio(default=2)
 	-zscore_cutoff cutoff_for_zscore(default=1.65)
 	-overwrite overwrite_all_existing_files
+	-skip_vep don't_rerun_vep_even_with_annotation_set
+	-debug report_on_filtering
 
 Required flags: -vcf_in -cell_annotation_file
 
@@ -146,11 +150,11 @@ my $rare_cutoff = defined $OPT{rare_cutoff}?$OPT{rare_cutoff}:0.02;
 if ($rare_cutoff > 0.5 && $rare_cutoff <= 0) {
 	Exception->throw("ERROR: Rare cutoff freq must be >1 and <0.5");
 } 
-my $odds_ratio_cutoff = defined $OPT{odds_ratio_cutoff}?$OPT{odds_ratio_cutoff}:2;
+my $odds_ratio_cutoff = defined $OPT{odds_ratio_cutoff}?$OPT{odds_ratio_cutoff}:1;
 
-my $zscore_cutoff = defined $OPT{zscore_cutoff}?$OPT{zscore_cutoff}:1.65;
+my $zscore_cutoff = defined $OPT{zscore_cutoff}?$OPT{zscore_cutoff}:0;
 
-
+my $debug = defined $OPT{debug}?1:0;
 
 my $vcf_file = $OPT{vcf_in};
 $vcf_file = abs_path($vcf_file);
@@ -184,7 +188,7 @@ my $only_somatic = defined $OPT{only_somatic}?1:0;
 
 my $cell_anno = defined $OPT{cell_annotation_file}?1:0;
 if ( $cell_anno && !-e $OPT{cell_annotation_file} ) {
-	modules::Exception->throw("File $OPT{cell_annotation_file} doesn't exist");
+	Exception->throw("File $OPT{cell_annotation_file} doesn't exist");
 }
 
 my $specific_cell_type = defined $OPT{cell_type}?$OPT{cell_type}:'All';
@@ -232,6 +236,7 @@ my $min_total_persample_qual = defined $OPT{min_total_persample_qual}?$OPT{min_t
 my $min_odd_ratio = defined $OPT{min_odd_ratio}?$OPT{min_odd_ratio}:0;
 my $min_allelefreq_mean_total = defined $OPT{min_allelefreq_mean_total}?$OPT{min_allelefreq_mean_total}:0;
 my $min_allelefreq_mean_celltype = defined $OPT{min_allelefreq_mean_celltype}?$OPT{min_allelefreq_mean_celltype}:0;
+my $min_totalportion_celltype = defined $OPT{min_totalportion_celltype}?$OPT{min_totalportion_celltype}:0;
 
 #Handling of edge cases
 
@@ -296,6 +301,7 @@ if ($cell_anno) {
 		chomp;
 		my ($sample,$celltype) = split();
 		$celltype =~ s/ /_/g;
+		$celltype =~ s/\//_/g;
 		$cellanno{$sample} = $celltype;
 		$cellanno_counts{$celltype}++;
 	}
@@ -451,41 +457,44 @@ my @commands = ();
 
 
 if ($vep) {
-	#Split by type (for vep input)
-	push @commands, "grep SNV $outdir/$vcf_out > $outdir/$vcf_out.snv";
-	push @commands, "grep -v SNV $outdir/$vcf_out > $outdir/$vcf_out.indel";
-	#Generate VEP inputs for SNV/INS/DEL
-	my $vep_in_command ="cat $outdir/$vcf_out.snv". ' | sed -e "s/:/ /g" -e "s/;/ /g" -e "s/->/ /" | awk \'{print $1,$2,$3,$7,$8,"+"}'."' > $outdir/vep.in"; 
-	my $vep_indel_command1 = "cat $outdir/$vcf_out.indel". ' | grep DEL |  sed -e "s/:/ /g" -e "s/;/ /g" -e "s/-/ /g" | awk \'{print $1,$2,$3,$8,"-","+"}'."' > $outdir/vep.indel.in";
-	my $vep_indel_command2 = "cat $outdir/$vcf_out.indel". ' | grep INS |  sed -e "s/:/ /g" -e "s/;/ /g" -e "s/+/ /g" -e "s/REF=//" | awk \'{print $1,$2,$3,$14,$14$7,"+"}'."' >> $outdir/vep.indel.in";
-	push @commands, $vep_in_command, $vep_indel_command1, $vep_indel_command2;
-	
-	
-	if ($overwrite) {
-		push @commands, "$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/vep.indel.in -all > $outdir/$vcf_out.vep.indel";
-		push @commands, "$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/vep.in > $outdir/$vcf_out.vep.exon";
-		push @commands, "$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/vep.in -all > $outdir/$vcf_out.vep.all";
-	} else {
-		if (!-e "$outdir/$vcf_out.vep.indel") {
-			push @commands, "$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/vep.indel.in -all > $outdir/$vcf_out.vep.indel";
-		}
-		if (!-e "$outdir/$vcf_out.vep.exon") {
-			push @commands, "$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/vep.in > $outdir/$vcf_out.vep.exon";
-		}
-		if (!-e "$outdir/$vcf_out.vep.all") {
-			push @commands,"$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/vep.in -all > $outdir/$vcf_out.vep.all"
-		}
+	if (!$OPT{skip_vep}) {
+		#Split by type (for vep input)
+		push @commands, "grep SNV $outdir/$vcf_out > $outdir/$vcf_out.snv";
+		push @commands, "grep -v SNV $outdir/$vcf_out > $outdir/$vcf_out.indel";
+		#Generate VEP inputs for SNV/INS/DEL
+		my $vep_in_command ="cat $outdir/$vcf_out.snv". ' | sed -e "s/:/ /g" -e "s/;/ /g" -e "s/->/ /" | awk \'{print $1,$2,$3,$7,$8,"+"}'."' > $outdir/$vcf_out.vep.in"; 
+		my $vep_indel_command1 = "cat $outdir/$vcf_out.indel". ' | grep DEL |  sed -e "s/:/ /g" -e "s/;/ /g" -e "s/-/ /g" | awk \'{print $1,$2,$3,$8,"-","+"}'."' > $outdir/$vcf_out.vep.indel.in";
+		my $vep_indel_command2 = "cat $outdir/$vcf_out.indel". ' | grep INS |  sed -e "s/:/ /g" -e "s/;/ /g" -e "s/+/ /g" -e "s/REF=//" | awk \'{print $1,$2,$3,$14,$14$7,"+"}'."' >> $outdir/$vcf_out.vep.indel.in";
+		push @commands, $vep_in_command, $vep_indel_command1, $vep_indel_command2;
 		
+		
+		if ($overwrite) {
+			push @commands, "$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/$vcf_out.vep.indel.in -all > $outdir/$vcf_out.vep.indel";
+			push @commands, "$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/$vcf_out.vep.in > $outdir/$vcf_out.vep.exon";
+			push @commands, "$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/$vcf_out.vep.in -all > $outdir/$vcf_out.vep.all";
+		} else {
+			if (!-e "$outdir/$vcf_out.vep.indel") {
+				push @commands, "$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/$vcf_out.vep.indel.in -all > $outdir/$vcf_out.vep.indel";
+			}
+			if (!-e "$outdir/$vcf_out.vep.exon") {
+				push @commands, "$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/$vcf_out.vep.in > $outdir/$vcf_out.vep.exon";
+			}
+			if (!-e "$outdir/$vcf_out.vep.all") {
+				push @commands,"$vep_wrapper -vep_conf $vep_conf -vep_in $outdir/$vcf_out.vep.in -all > $outdir/$vcf_out.vep.all"
+			}
+			
+		}
+		push @commands, "rm -f $outdir/$vcf_out.snv";
+		push @commands, "rm -f $outdir/$vcf_out.indel";
+			
 	}
-	push @commands, "rm -f $outdir/$vcf_out.snv";
-	push @commands, "rm -f $outdir/$vcf_out.indel";
 }
 
 
 
 #Run the commands
 for my $command (@commands) {
-	print "$command\n";
+	print STDERR "$command\n";
 	`$command` unless $OPT{no_run};
 }
 
@@ -514,7 +523,7 @@ while (<PARSED>) {
 	my ($var_type,$var_base_str,$qual,$allele_count,$zyg_count,$var_allele_total,$mean_af,$median_af,$var_read_count) = $data =~ /([A-Z]+);.*:(\S+);Q=(\S+);AC=(\d+);ZC=(\d+);ALLELE=(\d+).*MEANAF=(\S+);MEDAF=([0-9\.]+);VAR_READ_COUNTS=([0-9\/,]+)/;
 	
 	if ($var_type !~ /./) {
-		print "ERROR: Data $data\n";
+		print STDERR "ERROR: Data $data\n";
 	}
 	
 	my $var_base = my $ref_base;
@@ -608,7 +617,7 @@ while (<PARSED>) {
 	$line_count++;
 
   if ($line_count % 10000 == 0) {
-    print "Parsing vcf $chr $start\n";
+    print STDERR "Parsing vcf $chr $start\n";
   }
 }
 
@@ -713,8 +722,6 @@ if ($vep) {
 	print STDERR "Parsed VEP...\n";
 }
 
-#print Dumper $data{'X:41343232:41343232:'}
-
 
 my $out = defined $OPT{outfile}?"$outdir/".$OPT{outfile}:"$outdir/${vcf_out}.all.annotated.tsv";
 
@@ -810,13 +817,13 @@ for my $celltype ( keys %cellanno_counts ) {
 	}
 	my $celltype_out =  $out_short.'_'.$celltype.'.tsv';
 	local *FILE;
-	open(FILE,">$celltype_out") || modules::Exception->throw("Can't open file $celltype_out\n");
+	open(FILE,">$celltype_out") || Exception->throw("Can't open file $celltype_out\n");
 	push @{$celltype_fhs{$celltype}}, *FILE;
 	
 	if ($vep) {
 		my $celltype_priority =  $out_short.'_'.$celltype.'_priority.tsv';
 		local *PRIORITY;
-		open(PRIORITY,">$celltype_priority") || modules::Exception->throw("Can't open file $celltype_priority\n");
+		open(PRIORITY,">$celltype_priority") || Exception->throw("Can't open file $celltype_priority\n");
 		push @{$celltype_fhs_priority{$celltype}}, *PRIORITY;
 	}   
 }
@@ -1014,14 +1021,17 @@ for my $key (@keys) {
 	
 	#If below min_mean_af
 	if ($var_mean_af =~ /\d/ && $var_mean_af <  $min_allelefreq_mean_total) {
+		print "$key Filtered ALL Mean_AF $var_mean_af <  $min_allelefreq_mean_total\n" if $debug;
 		$print_all = 0;
 	}
 	
 	if ($data_count <  $min_datacount_total) {
+		print "$key Filtered ALL Min_datacount $data_count <  $min_datacount_total\n" if $debug;
 		$print_all = 0;
 	}
 	
 	if (exists $data{$key}{var_count} && $data{$key}{var_count} < $min_varcount_total) {
+		print "$key Filtered ALL Min_varcount $data{$key}{var_count} < $min_varcount_total\n" if $debug;
 		$print_all = 0;
 	}
 	
@@ -1029,19 +1039,23 @@ for my $key (@keys) {
 	if (exists $data{$key}{var_count}) {
 		my $var_portion = sprintf("%.4f",$var_count/$data_count);
 		if ($var_portion <  $min_varportion_total) {
+			print "$key Filtered ALL Min_varportion $var_portion <  $min_varportion_total\n" if $debug;
 			$print_all = 0;
 		}
 	}
 	
 	if ($data{$key}{qual} <  $min_total_qual) {
+		print "$key Filtered ALL Min_total_qual $data{$key}{qual} <  $min_total_qual\n" if $debug;
 		$print_all = 0;
 	}
 	
 	if ($average_score <  $min_total_persample_qual) {
+		print "$key Filtered ALL Min_persample_qual $average_score <  $min_total_persample_qual\n" if $debug;
 		$print_all = 0;
 	}
 	
 	if ($data_portion <  $min_dataportion_total) {
+		print "$key Filtered ALL Min_dataportion $data_portion <  $min_dataportion_total\n" if $debug;
 		$print_all = 0;
 	}
 	
@@ -1133,9 +1147,9 @@ for my $key (@keys) {
 	
 	my @first_alllines = ($chr,$start,$end,$data{$key}{qual},$average_score,$var_str,$ref_count,$nd_count,$var_mean_af,$var_median_af,$var_samples,$data{$key}{var_type},$data{$key}{ref},$var_base);
 	my @last_alllines = ($genename,$ens_gene,$ens_trans,$rs,$gnomad,$gmaf,$var_consequence,$aa_change,$poly_cat,$poly_score,$sift_cat,$sift_score,$domain,$pubmed,$clin);
-		
-	#Here we divide variants into cluster and non-cluster
-	if ($cell_anno) {
+	
+	#Here we divide variants into cluster and non-cluster; only proceed with non-filtered variants
+	if ($cell_anno && $print_all) {
 		
 		#New MB variables needed;  set defaults to account to few complex overlapping cases...	
 		my $cluster_var_portion = 'N/A';
@@ -1164,28 +1178,38 @@ for my $key (@keys) {
 			
 			#Apply filters
 			if ($cluster_var_count !~ /N\/A/ && $cluster_var_count < $min_varcount_celltype ) {
+				print "$key FilteredCell $celltype clus_var_count $cluster_var_count < $min_varcount_celltype\n" if $debug;
 				$celltype_printall = 0;
 			} 	
 			
 			if ($cluster_var_portion !~ /N\/A/ && $cluster_var_portion < $min_varportion_celltype) {
+				print "$key FilteredCell $celltype clus_var_portion $cluster_var_portion < $min_varportion_celltype\n" if $debug;
 				$celltype_printall = 0;
 			}
 			
 			if ($celltype_datacount !~ /N\/A/ && $celltype_datacount < $min_datacount_celltype ) {
+				print "$key FilteredCell $celltype celltype_data_count $celltype_datacount < $min_datacount_celltype\n" if $debug;
+				$celltype_printall = 0;
+			}
+			
+			if ($zscore !~ /N\/A/ && $zscore < $zscore_cutoff) {
+				print "$key FilteredCell $celltype zscore $zscore < $zscore_cutoff\n" if $debug;
+				$celltype_printall = 0;
+			}
+			
+			if ($OR !~ /N\/A/ && $OR < $odds_ratio_cutoff) {
+				print "$key FilteredCell $celltype oddsratio $OR < $odds_ratio_cutoff\n" if $debug;
+				$celltype_printall = 0;
+			}
+			
+			if ($portion_cluster < $min_totalportion_celltype) {
+				print "$key FilteredCell $celltype min_celltype_portion $portion_cluster < $min_totalportion_celltype\n" if $debug;
 				$celltype_printall = 0;
 			}
 			
 			
 			#Apply filters
-			if ($zscore !~ /N\/A/ && $zscore < $zscore_cutoff) {
-				$celltype_priority = 0;
-			}
-			
 			if ($OR =~ /N\A/ && $OR !~ /SOMATIC/) {
-				$celltype_priority = 0;
-			}
-			
-			if ($OR !~ /N\/A/ && $OR < $odds_ratio_cutoff) {
 				$celltype_priority = 0;
 			}
 			

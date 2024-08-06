@@ -3,7 +3,6 @@ package Vcf;
 use strict;
 use Data::Dumper;
 use Exception;
-use Statistics::Descriptive::Full;
 
 sub new {
     my ($class, @args) = @_;
@@ -154,7 +153,7 @@ sub parse_vcf {
 			
 			#Get the frequency across all the samples containing the variant
 				
-			my $stats = Statistics::Descriptive::Full->new();
+			my @stats = ();
 			
 			my @var_counts;
 			
@@ -166,13 +165,16 @@ sub parse_vcf {
 					
 				#Some strange GTs don't have multiple values listed....
 				if (@gt_fields_data > 1) {
+					#Strings like 10,5,2
     				my @ads = split(',',$gt_fields_data[1]);
+    				#Total allele count
     				my $sum = 0;
     				for my $element (@ads) {
     					$sum += $element if $element =~ /\d/;
 					}	
 						
 					my $var_count;
+					#Variant count for that allele
 					if (defined $ads[$zyg_num] && $ads[$zyg_num] =~ /\d/) {
 						$var_count = $ads[$zyg_num];
 					} else {
@@ -186,15 +188,19 @@ sub parse_vcf {
     					$sample_af = sprintf("%.4f",$ads[$zyg_num]/$sum)
     				}
     				$var_count_str =  "$var_count/$sum";
+	    			push @stats,$sample_af if $var_count>1;
+	    			push @var_counts,$var_count_str;
 				}
     				
-    			push @var_counts,$var_count_str;
     				
-    			$stats->add_data($sample_af);
 			}
 				
-			my $mean = defined $stats->mean?$stats->mean:0;
-			my $median = defined $stats->median?$stats->median:0;
+			my $mean = my $median = 0;
+			
+			if (@stats) {
+				($mean,$median) = _mean_median(-numbers=>\@stats);
+			}
+			
 			
 			$vcf_data{$var_key}{mean_af} = sprintf("%.3f",$mean);
 			$vcf_data{$var_key}{median_af} = sprintf("%.3f",$median);
@@ -251,7 +257,7 @@ sub write_normalised {
 	    }
 	
 	
-		my $vcf_str  = $vcf_data->{$var_key}{type}.';'.$var_key.';Q='.$vcf_data->{$var_key}{qual}. ';AC='.$var_count . ';ZC='.$zyg_count.";ALLELE=".$vcf_data->{$var_key}{allele}.".MEANAF=".$vcf_data->{$var_key}{mean_af}.";MEDAF=".$vcf_data->{$var_key}{median_af}.";VAR_READ_COUNTS=".$vcf_data->{$var_key}{var_read_counts};
+		my $vcf_str  = $vcf_data->{$var_key}{type}.';'.$var_key.';Q='.$vcf_data->{$var_key}{qual}. ';AC='.$var_count . ';ZC='.$zyg_count.";ALLELE=".$vcf_data->{$var_key}{allele}.";MEANAF=".$vcf_data->{$var_key}{mean_af}.";MEDAF=".$vcf_data->{$var_key}{median_af}.";VAR_READ_COUNTS=".$vcf_data->{$var_key}{var_read_counts};
 		
 
 		if ($vcf_data->{$var_key}{type} eq 'INS') {
@@ -451,4 +457,30 @@ sub _get_variant_key {
 }
 
 
+#Simple stats to avoid installing Statistics::Descriptive as not standard
+sub _mean_median { 
+	my @args = @_;
+	my %args = @args;
+	
+	
+	my @numbers = @{$args{-numbers}};
+	
+	my $sum = 0;
+	my @sorted_numbers = sort {$a<=>$b} @numbers;
+	foreach (@numbers) { $sum += $_; }
+	
+    my $mean = $sum/@numbers;
+    my $median_pos = int(@numbers / 2);
+
+    my $median;
+    if ( @numbers % 2 == 1) {
+        $median = $sorted_numbers[$median_pos];
+    } else {
+        my $median_pos2 = $median_pos - 1;
+        $median = ($sorted_numbers[$median_pos] + $sorted_numbers[$median_pos2]) / 2;
+    }
+    
+    
+  	return ($mean,$median);
+}
 return 1;
