@@ -87,7 +87,7 @@ tapestri.pl
 	-skip_vep don't_rerun_vep_even_with_annotation_set
 	-debug report_on_filtering
 
-Required flags: -vcf_in -cell_annotation_file
+Required flags: -vcf_in 
 
 =head1 OPTIONS
 
@@ -150,7 +150,7 @@ my $rare_cutoff = defined $OPT{rare_cutoff}?$OPT{rare_cutoff}:0.02;
 if ($rare_cutoff > 0.5 && $rare_cutoff <= 0) {
 	Exception->throw("ERROR: Rare cutoff freq must be >1 and <0.5");
 } 
-my $odds_ratio_cutoff = defined $OPT{odds_ratio_cutoff}?$OPT{odds_ratio_cutoff}:1;
+my $odds_ratio_cutoff = defined $OPT{odds_ratio_cutoff}?$OPT{odds_ratio_cutoff}:-1000;
 
 my $zscore_cutoff = defined $OPT{zscore_cutoff}?$OPT{zscore_cutoff}:0;
 
@@ -464,7 +464,7 @@ if ($vep) {
 		#Generate VEP inputs for SNV/INS/DEL
 		my $vep_in_command ="cat $outdir/$vcf_out.snv". ' | sed -e "s/:/ /g" -e "s/;/ /g" -e "s/->/ /" | awk \'{print $1,$2,$3,$7,$8,"+"}'."' > $outdir/$vcf_out.vep.in"; 
 		my $vep_indel_command1 = "cat $outdir/$vcf_out.indel". ' | grep DEL |  sed -e "s/:/ /g" -e "s/;/ /g" -e "s/-/ /g" | awk \'{print $1,$2,$3,$8,"-","+"}'."' > $outdir/$vcf_out.vep.indel.in";
-		my $vep_indel_command2 = "cat $outdir/$vcf_out.indel". ' | grep INS |  sed -e "s/:/ /g" -e "s/;/ /g" -e "s/+/ /g" -e "s/REF=//" | awk \'{print $1,$2,$3,$14,$14$7,"+"}'."' >> $outdir/$vcf_out.vep.indel.in";
+		my $vep_indel_command2 = "cat $outdir/$vcf_out.indel". ' | grep INS |  sed -e "s/:/ /g" -e "s/;/ /g" -e "s/+/ /g" -e "s/REF=//" | awk \'{print $1,$2,$3,$15,$15$7,"+"}'."' >> $outdir/$vcf_out.vep.indel.in";
 		push @commands, $vep_in_command, $vep_indel_command1, $vep_indel_command2;
 		
 		
@@ -586,6 +586,9 @@ while (<PARSED>) {
 					push @{$data{$key}{var_samples}},$sample;
 					$sample_varcount{$sample}++;
 				}
+			} else {
+				#Handling for second varaint allele not reported
+				$zyg = 'ref';
 			}
 		} elsif ($allele1 != $allele2) {
 			if ($zyg_count == $allele1 || $zyg_count == $allele2) {
@@ -598,7 +601,11 @@ while (<PARSED>) {
 					push @{$data{$key}{var_samples}},$sample;
 					$sample_varcount{$sample}++;
 				}
+			} else {
+				#Handling for second varaint allele not reported
+				$zyg = 'ref';
 			} 
+			
 		}  else {
 			Exception->throw("ERROR with $genotypes[$count]\n");
 		}
@@ -682,7 +689,6 @@ if ($vep) {
 	    $data{$key}{clin} = $fields[9];
 	    $data{$key}{exon_str} = $fields[10]; 
 	    $data{$key}{ens_gene} = $fields[11];
-	    $data{$key}{ens_trans} = $fields[12];
 	    $data{$key}{ens_trans} = $fields[12];
 	    $data{$key}{cadd_phred} = $fields[13];
 	    $data{$key}{var_consequence} = $fields[14];

@@ -151,12 +151,14 @@ sub parse_result {
 
 	my %grouping_data = ();
 
+
+
 	while (<$OUTPUT>){
 		chomp;
 		#Skip headers
 		next if $_ =~ /^#/;
 		
-		my ($identifier, $coord_str, $var_base, $ens_gene, $ens_transcript, undef, $aa_type, undef, undef, $aa_pos, $aa_change, $codon_change, $rs, $attribute_str ) = split /\t/;
+		my ($identifier, $coord_str, $var_base, $ens_gene, $ens_transcript, undef, $aa_type, undef, $var_consequence, $aa_pos, $aa_change, $codon_change, $rs, $attribute_str ) = split /\t/;
 		
 		if ($rs eq '-') {
 			$rs = "N/A";
@@ -233,7 +235,7 @@ sub parse_result {
 			$aa_var = 'Stop' if ($aa_var eq '*');
 		
 			#Just keep one copy of redundant entries
-			$grouping_data{$chr}{$start}{$end}{"$aa_ref->$aa_var"} = [ $chr, $start, $end, $var_type, $aa_type, $var_base, $ens_gene, $ens_transcript, $aa_ref, $aa_var, $aa_pos, $polyphen_pred, $polyphen_score, $sift_pred, $sift_score, $cadd_phred];
+			$grouping_data{$chr}{$start}{$end}{$var_base}{"$aa_ref->$aa_var"} = [ $chr, $start, $end, $var_type, $aa_type, $var_base, $ens_gene, $ens_transcript, $aa_ref, $aa_var, $aa_pos, $polyphen_pred, $polyphen_score, $sift_pred, $sift_score, $cadd_phred];
 		
 			#push @parsed_result, [$aa_type, $chr, $start, $ens_gene, $ens_transcript, $aa_ref, $aa_var, $polyphen_pred, $polyphen_score, $sift_pred, $sift_score];
 	    } else {
@@ -299,25 +301,26 @@ sub parse_result {
 
 	my @parsed_result;
 
+	print Dumper \%grouping_data;
+
 	for my $chr ( sort keys %grouping_data ) {
 	    for my $start_coord ( sort {$a<=>$b} keys %{$grouping_data{$chr}} ) {
 	    	for my $end_coord (keys %{$grouping_data{$chr}{$start_coord}}) {
-	    		if ($self->{exon}) {
-	    			for my $aa_change (keys %{$grouping_data{$chr}{$start_coord}{$end_coord}}) {
-	    				push @parsed_result, $grouping_data{$chr}{$start_coord}{$end_coord}{$aa_change};
-	    			}
-		    	} else {
-		    		for my $varbase (keys %{$grouping_data{$chr}{$start_coord}{$end_coord}}) {
-		    			#Preferably use exon overlap
-		    			if (exists $grouping_data{$chr}{$start_coord}{$end_coord}{$varbase}{exon}) {
-		    				push @parsed_result, $grouping_data{$chr}{$start_coord}{$end_coord}{$varbase}{exon};
-		    			} elsif (exists $grouping_data{$chr}{$start_coord}{$end_coord}{$varbase}{intron}) {
-		    				push @parsed_result, $grouping_data{$chr}{$start_coord}{$end_coord}{$varbase}{intron};
-		    			} else {
-		    				push @parsed_result, $grouping_data{$chr}{$start_coord}{$end_coord}{$varbase}{neither};
+	    		for my $var_base (keys %{$grouping_data{$chr}{$start_coord}{$end_coord}}) {
+		    		if ($self->{exon}) {
+		    			for my $aa_change (keys %{$grouping_data{$chr}{$start_coord}{$end_coord}{$var_base}}) {
+		    				push @parsed_result, $grouping_data{$chr}{$start_coord}{$end_coord}{$var_base}{$aa_change};
 		    			}
-		    		}
-	    			
+			    	} else {
+		    			#Preferably use exon overlap
+		    			if (exists $grouping_data{$chr}{$start_coord}{$end_coord}{$var_base}{exon}) {
+		    				push @parsed_result, $grouping_data{$chr}{$start_coord}{$end_coord}{$var_base}{exon};
+		    			} elsif (exists $grouping_data{$chr}{$start_coord}{$end_coord}{$var_base}{intron}) {
+		    				push @parsed_result, $grouping_data{$chr}{$start_coord}{$end_coord}{$var_base}{intron};
+		    			} else {
+		    				push @parsed_result, $grouping_data{$chr}{$start_coord}{$end_coord}{$var_base}{neither};
+		    			}
+			    	}
 	    		}
 	    	}
 		}
