@@ -13,7 +13,6 @@ sub new {
 			             -exon,
 			             -input_file,   
 						 -executable_path,
-						 -db_dir,        
 						 -working_dir,  
 						 -vep_args   
 						 );
@@ -32,7 +31,14 @@ sub new {
     $self->{exon} = $args{-exon};
     $self->input_file($args{-input_file});
     $self->executable_path($args{-executable_path});
-    $self->db_dir($args{-db_dir});
+    
+    if (defined $args{-db_dir}) {
+		$self->db_dir($args{-db_dir});
+	} else {
+		$self->{server} = 1;
+	}
+    
+    
     $self->working_dir($args{-working_dir});
     $self->vep_args($args{-vep_args});
     
@@ -120,9 +126,12 @@ sub run {
     my $command 
 	= $self->executable_path 
 	. ' ' . $self->vep_args
-	. ' --dir ' . $self->db_dir
 	. ' --o ' . $self->output_file
 	. ' --i ' . $self->input_file;
+
+	if (!$self->{server}) {
+		$command .= ' --dir ' . $self->db_dir;
+	}
 
     print STDERR "Running command: $command\n";
 	my $sys_call = SystemCall->new();
@@ -301,7 +310,7 @@ sub parse_result {
 
 	my @parsed_result;
 
-	print Dumper \%grouping_data;
+	#print Dumper \%grouping_data;
 
 	for my $chr ( sort keys %grouping_data ) {
 	    for my $start_coord ( sort {$a<=>$b} keys %{$grouping_data{$chr}} ) {

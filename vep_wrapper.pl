@@ -72,7 +72,12 @@ while (<CONF>) {
 	$vep_confs{$arg} =$value;
 }
 
-my $vep_db_dir = $vep_confs{'vep_db'};
+my $vep_db_dir = 0;
+
+if (exists $vep_confs{'vep_db'}) {
+	$vep_db_dir = $vep_confs{'vep_db'};
+}
+
 my $vep_executable = $vep_confs{'vep_bin'};
 my $exon = defined $OPT{all}?0:1;
 
@@ -118,7 +123,18 @@ if ($OPT{parse_file}) {
 }
 
 
-my $vep = VEP->new(-input_file      => $vep_input,
+my $vep;
+
+if (!$vep_db_dir) {
+	$vep = VEP->new(-input_file      => $vep_input,
+							-executable_path => $vep_executable,
+							-working_dir     => $workdir,
+							-exon => $exon,
+							-vep_args => $vep_args,
+							-output_file => $outfile
+							);
+} else {
+	$vep = VEP->new(-input_file      => $vep_input,
 							-executable_path => $vep_executable,
 	  						-db_dir          => $vep_db_dir,
 							-working_dir     => $workdir,
@@ -126,6 +142,7 @@ my $vep = VEP->new(-input_file      => $vep_input,
 							-vep_args => $vep_args,
 							-output_file => $outfile
 							);
+}
 							
 $vep->run unless $OPT{parse_file};
 	

@@ -17,11 +17,12 @@ GetOptions(\%OPT,
 	   "help|h",
 	   "man|m",
 	   "vcf_in=s",
+	   "h5vcf_in=s",
 	   "outdir=s",
 	   "outfile=s",
 	   "cell_annotation_file=s",
 	   "cell_type=s",
-	   "annotate_conf=s", 
+	   "vep_conf=s", 
 	   "min_varcount_total=i", 
 	   "min_varcount_celltype=i", 
 	   "min_varportion_total=s", 
@@ -48,7 +49,7 @@ GetOptions(\%OPT,
    );
 
 pod2usage(-verbose => 2) if $OPT{man};
-pod2usage(1) if ($OPT{help} || !$OPT{vcf_in});
+pod2usage(1) if ($OPT{help} || (!$OPT{vcf_in} && !$OPT{h5vcf_in}));
 
 =pod
 
@@ -60,7 +61,7 @@ tapestri.pl
 	-outfile output_summary_name(in_outdir)
 	-cell_annotation_file cell_annotation_file(tsv_with_format 'sample celltype')
 	-cell_type specific_celltype_to_use(default=all)
-	-annotate_conf conf_file_if_running_vep_annotation_steps
+	-vep_conf conf_file_if_running_vep_annotation_steps
 	-min_varcount_total minimum_number_samples_with_variant
 	-min_varcount_celltype minimum_number_samples_in_celltype_with_variant
 	-min_varportion_total minimum_portion_total_samples_with_variant
@@ -87,7 +88,7 @@ tapestri.pl
 	-skip_vep don't_rerun_vep_even_with_annotation_set
 	-debug report_on_filtering
 
-Required flags: -vcf_in 
+Required flags: -vcf_in || -h5vcf_in
 
 =head1 OPTIONS
 
@@ -156,21 +157,31 @@ my $zscore_cutoff = defined $OPT{zscore_cutoff}?$OPT{zscore_cutoff}:0;
 
 my $debug = defined $OPT{debug}?1:0;
 
-my $vcf_file = $OPT{vcf_in};
+my $h5 = defined $OPT{h5vcf_in}?1:0;
+
+my $vcf_file;
+
+if ($h5) {
+	$vcf_file = $OPT{h5vcf_in};
+} else {
+	$vcf_file = $OPT{vcf_in};
+}
+
+
 $vcf_file = abs_path($vcf_file);
 
 if ( !-e $vcf_file ) {
 	Exception->throw("File $vcf_file doesn't exist");	
 }
 
-my $vcf = Vcf->new(-vcf=>$vcf_file);
 
 #Keep track of total var/sample to allow potential filtering (rerun with reduced sample list)
 my %sample_varcount = ();
 
 #For output files
 my ($vcf_short) = basename($vcf_file);
-(my $vcf_out = $vcf_short) =~ s/.vcf/.txt/;
+
+(my $vcf_out = $vcf_short) =~ s/.[a-z][a-z][a-z]$/.txt/;
 
 #Default run all chromosomes
 my $chr_filter = defined $OPT{chr}?$OPT{chr}:"all";
@@ -181,7 +192,6 @@ chomp $outdir;
 $outdir = abs_path($outdir);
 
 my $script_dir = dirname(__FILE__);
-my $vep = defined $OPT{annotate_conf}?1:0;
 
 my $only_somatic = defined $OPT{only_somatic}?1:0;
 
@@ -244,15 +254,18 @@ if ($OPT{control_file} && !$OPT{sample_file}) {
 	Exception->throw("ERROR: Can't use control option without sample_file\n");
 }
 
-if ($OPT{plot_genes} && !$vep) {
-	Exception->throw("ERROR: Plot genes only works for priority variants annotated with vep\n");
-}
 
+
+my $vep = defined $OPT{vep_conf}?1:0;
 
 my $vep_wrapper = "$script_dir/vep_wrapper.pl";
 my $vep_conf = defined $OPT{vep_conf}?$OPT{vep_conf}:"$script_dir/tapestri.csv";
 
 my @var_types = qw(snv indel);
+
+if ($OPT{plot_genes} && !$vep) {
+	Exception->throw("ERROR: Plot genes only works for priority variants annotated with vep\n");
+}
 
 
 #Look at specific samples only
@@ -302,32 +315,12 @@ if ($cell_anno) {
 		my ($sample,$celltype) = split();
 		$celltype =~ s/ /_/g;
 		$celltype =~ s/\//_/g;
+		$sample =~ s/-1$//;
 		$cellanno{$sample} = $celltype;
 		$cellanno_counts{$celltype}++;
 	}
 } 
 	
-
-
-
-
-#headers
-my @common_headers = (
-						'chr',
-						'start',
-						'end',
-						'total_sample_quals',
-						'average_qual_per_sample',
-						'variant_count (het/hom)',
-						'ref_count',
-						'no_data_count',
-						'mean_variant_af',
-						'median_variant_af',
-						'variant_samples',
-						'var_type',
-						'ref_base',
-						'var_base'
-						);
 
 
 #headers for reporting single cell type
@@ -365,31 +358,93 @@ my @vep_headers = (
 
 #Now parse the files for the final report
 my @samples = ();
+my @common_headers = ();
 
-open(VCF,"$vcf_file") || Exception->throw("Can't open file $vcf_file\n");
-while (<VCF>) {
-	chomp;
-	next unless /^#CHROM/;
-	my @fields = split("\t",$_);
-	for my $field (@fields) { 
-		next if $field eq '#CHROM';
-		next if $field eq 'POS';
-		next if $field eq 'ID';
-		next if $field eq 'REF';
-		next if $field eq 'ALT';
-		next if $field eq 'QUAL';
-		next if $field eq 'FILTER';
-		next if $field eq 'INFO';
-		next if $field eq 'FORMAT';
-		push @samples, $field;
-		if (!$cell_anno) {
-			#Just create a generic single cell type
-			$cellanno{$field} = 'Single_celltype';
-			$cellanno_counts{'Single_celltype'}++;
+if ($h5) {
+	open(VCF,"$vcf_file") || Exception->throw("Can't open file $vcf_file\n");
+	while (<VCF>) {
+		chomp;
+		next unless /^CHROM/;
+		my @fields = split("\t",$_);
+		for my $field (@fields) { 
+			next if $field eq 'CHROM';
+			next if $field eq 'POS';
+			next if $field eq	'ID';
+			next if $field eq	'REF';
+			next if $field eq	'ALT';	
+			
+			$field =~ s/-1$//;
+			push @samples, $field;
+			
+			if (!$cell_anno) {
+				#Just create a generic single cell type
+				$cellanno{$field} = 'Single_celltype';
+				$cellanno_counts{'Single_celltype'}++;
+			}
 		}
+		last;
 	}
-  last;
+	@common_headers = (
+						'chr',
+						'start',
+						'end',
+						'average_sample_quals',
+						'average_qual_per_sample',
+						'variant_count (het/hom)',
+						'ref_count',
+						'no_data_count',
+						'mean_variant_af',
+						'median_variant_af',
+						'variant_samples',
+						'var_type',
+						'ref_base',
+						'var_base'
+						);
+} else {
+	open(VCF,"$vcf_file") || Exception->throw("Can't open file $vcf_file\n");
+	while (<VCF>) {
+		chomp;
+		next unless /^#CHROM/;
+		my @fields = split("\t",$_);
+		for my $field (@fields) { 
+			next if $field eq '#CHROM';
+			next if $field eq 'POS';
+			next if $field eq 'ID';
+			next if $field eq 'REF';
+			next if $field eq 'ALT';
+			next if $field eq 'QUAL';
+			next if $field eq 'FILTER';
+			next if $field eq 'INFO';
+			next if $field eq 'FORMAT';
+			$field =~ s/-1$//;
+			push @samples, $field;
+			if (!$cell_anno) {
+				#Just create a generic single cell type
+				$cellanno{$field} = 'Single_celltype';
+				$cellanno_counts{'Single_celltype'}++;
+			}
+		}
+	  last;
+	}
+	@common_headers = (
+						'chr',
+						'start',
+						'end',
+						'total_sample_quals',
+						'average_qual_per_sample',
+						'variant_count (het/hom)',
+						'ref_count',
+						'no_data_count',
+						'mean_variant_af',
+						'median_variant_af',
+						'variant_samples',
+						'var_type',
+						'ref_base',
+						'var_base'
+						);
 }
+
+
 
 #headers for reporting all celltypes
 my @all_celltype_headers = ();
@@ -444,12 +499,113 @@ if ( $col_index_all == 0 ) {
 my $sample_count = @samples;
 
 
+my $vcf = Vcf->new(-vcf=>$vcf_file);
+
+
+
 #First check and parse the vcf
 if ($overwrite || !-e "$outdir/$vcf_out") {
-	print STDERR "Normalising vcf...\n";
-	$vcf->check_vcf(-vcf_file=>$vcf_file);
-	$vcf->parse_vcf(-vcf_file=>$vcf_file);
-	$vcf->write_normalised(-vcf_file=>$vcf_file,-vcf_out=>"$outdir/$vcf_out");
+	if ($h5) {
+		print STDERR "Parsing h5....\n";
+		open(OUT,">$outdir/$vcf_out") || Exception->throw("Can't open file to write $outdir/$vcf_out\n");
+		open(H5,"$vcf_file") || modules::Exception->throw("Can't open file $vcf_file\n");
+		
+		while (<H5>) {
+			next if $_ =~ /CHROM/;
+			#print $_;
+			chomp;
+			my ($chr,$start,$id,$ref,$alt,@genotypes) = split("\t",$_);
+			
+			#Upstream deletion and other strange Tapestri cases
+			next if $alt =~ /\*/;
+			next if $ref =~ /\*/;
+			next if $alt eq '.';
+			next if $alt eq '';
+			my $var_type;
+			my $end = $start;
+			my $var_key;
+			if (length($alt) > length($ref)) {
+				#Insertion
+				$var_type = 'INS';
+				$alt =~ s/^[ATGCN]//;
+				$var_key = '+'.$alt;
+			} elsif (length($ref) > length($alt)) {
+				#Deletion
+				$var_type = 'DEL';
+				$ref =~ s/^[ATGCN]//;
+				my $del_length = length($ref);
+				$var_key = '-'.$ref;
+				$end = $start+$del_length;
+				$start += 1;
+			} elsif (length($alt) == 1 && length($ref) == 1) {
+				#SNP
+				$var_type = 'SNV';
+				$var_key = $ref.'->'.$alt;
+			} elsif (length($alt) == length($ref)) {
+				#Strange case with long seqs of the same length
+				next;
+			} else {
+				Exception->throw("Can't parse line $chr $start $id $ref $alt\n");
+			}
+
+			my $allele_count = 0;
+			my @var_quals = my @afs = my @var_counts = ();
+			
+			
+			#Now get stats from genotype info
+			for my $geno_string (@genotypes) {
+				#DP=51;AF=1.96078431372549;GQ=99;NGT=0
+				
+				my ($dp,$af,$gq,$ngt) = $geno_string =~ /DP=(\d+);AF=([0-9\.]+);GQ=(\d+);NGT=(\d+)/;
+				
+				if ($ngt == 1) {
+					$allele_count++;
+				} 
+				my $read_count = 0;
+				if ($af > 0) {
+					push @afs, $af/100;
+					push @var_quals, $gq;
+					
+				}
+				
+				push @var_counts, $read_count.'/'.$dp;
+				
+				
+			}
+
+			my $full_var_key = $chr.':'.$start.'-'.$end.':'.$var_key;
+			my $var_read_counts = join(",",@var_counts);
+			
+			my $mean_af = my $median_af;
+			if (@afs) {
+				($mean_af,$median_af) = _mean_median(-numbers=>\@afs);
+			}
+			
+			my $mean_gq;
+			if (@var_quals) {
+				($mean_gq,undef) = _mean_median(-numbers=>\@var_quals);
+			}
+			
+			my $allele_total = $allele_count .'/'.$sample_count;
+			
+			my $h5_str  = $var_type.';'.$full_var_key.';Q='.sprintf("%.2f",$mean_gq). ';AC='.$allele_count . ';ZC=1'.";ALLELE=".$allele_total.";MEANAF=".sprintf("%.4f",$mean_af).";MEDAF=".sprintf("%.4f",$median_af).";VAR_READ_COUNTS=".$var_read_counts;
+			if ($var_type eq 'INS') {
+				$h5_str .= ";REF=".$ref;
+			}
+
+			#SNV;1:65300145-65300145:C->G;Q=6130.04;AC=28;ZC=1;ALLELE=32/9708;MEANAF=0.059;MEDAF=0.038;VAR_READ_COUNTS=0/51,
+			print OUT join("\t",$chr,$start,$end,$h5_str,@genotypes)."\n";
+			
+		}
+		
+		
+	} else { 
+		print STDERR "Normalising vcf...\n";
+		$vcf->check_vcf(-vcf_file=>$vcf_file);
+		$vcf->parse_vcf(-vcf_file=>$vcf_file);
+		$vcf->write_normalised(-vcf_file=>$vcf_file,-vcf_out=>"$outdir/$vcf_out");
+		
+	}
 }
 
 #Build up command list
@@ -548,71 +704,104 @@ while (<PARSED>) {
 	my $zyg = "N/A";
 	my $sample;
 
-
-	for (my $count = 0; $count < @genotypes; $count++) {
-		my @geno_fields = split(':',$genotypes[$count]);
-		$sample = defined $samples[$count]?$samples[$count]:0; #Mutect doesn't list samples
-		
-		#Don't count if sample not included (except with controls or count_all flag)
-		if (keys %samples && !keys %controls) {
-			next unless exists $samples{$sample} ;
-		}
-		
-		my ($allele1,$allele2);
-		if ($geno_fields[0] =~ /\//) {
-			($allele1,$allele2) = split('/',$geno_fields[0]);
-		} elsif ($geno_fields[0] =~ /\|/) {
-			($allele1,$allele2) = split('\|',$geno_fields[0]);
-		} else {
-			#Exception->throw("ERROR: Can't handle genotype $geno_fields[0]\n");
-			next;
-		}
-		if ($allele1 eq '0' && $allele2 eq '0') {
-			$zyg = 'ref';
-			$data{$key}{ref_count}++;
-			$data{$key}{celltype}{$cellanno{$sample}}{ref_count}++;
-		} elsif ($geno_fields[0] eq './.' || $geno_fields[0] eq '.|.') {
-			$zyg = 'no_call';
-			$data{$key}{no_data_count}++;
-			$data{$key}{celltype}{$cellanno{$sample}}{nodata_count}++;
-		} elsif ($allele1 == $allele2) {
-			if ($allele1 == $zyg_count) {
-				$zyg = 'hom';
-				$data{$key}{hom_count}++;
-				$data{$key}{var_count}++;
-				$data{$key}{celltype}{$cellanno{$sample}}{var_count}++;
-				$data{$key}{celltype}{$cellanno{$sample}}{hom_count}++;
-				if ($sample) {
-					push @{$data{$key}{var_samples}},$sample;
-					$sample_varcount{$sample}++;
-				}
-			} else {
-				#Handling for second varaint allele not reported
-				$zyg = 'ref';
-			}
-		} elsif ($allele1 != $allele2) {
-			if ($zyg_count == $allele1 || $zyg_count == $allele2) {
-				$zyg = 'het';
-				$data{$key}{het_count}++;
-				$data{$key}{var_count}++;
-				$data{$key}{celltype}{$cellanno{$sample}}{var_count}++;
-				$data{$key}{celltype}{$cellanno{$sample}}{het_count}++;
-				if ($sample) {
-					push @{$data{$key}{var_samples}},$sample;
-					$sample_varcount{$sample}++;
-				}
-			} else {
-				#Handling for second varaint allele not reported
-				$zyg = 'ref';
-			} 
+	if ($h5) {
+		#Genotype info is different with not as much info (e.g. no hom/het just variant or ref)
+		for (my $count = 0; $count < @genotypes; $count++) {
+			my ($dp,$af,$gq,$ngt) = $genotypes[$count] =~ /DP=(\d+);AF=([0-9\.]+);GQ=(\d+);NGT=(\d+)/;
+			$sample = defined $samples[$count]?$samples[$count]:0; #Mutect doesn't list samples
 			
-		}  else {
-			Exception->throw("ERROR with $genotypes[$count]\n");
+			if ($ngt == 1) {
+				$data{$key}{var_count}++;
+				$data{$key}{celltype}{$cellanno{$sample}}{var_count}++;
+				
+				if ($af>0.75) {
+					$data{$key}{zyg}{$sample} = 'hom';
+					$data{$key}{hom_count}++;
+					$data{$key}{celltype}{$cellanno{$sample}}{hom_count}++;
+				} else {
+					$data{$key}{zyg}{$sample} = 'het';		
+					$data{$key}{het_count}++;
+					$data{$key}{celltype}{$cellanno{$sample}}{het_count}++;				
+				}
+			} else {
+				$data{$key}{ref_count}++;
+				$data{$key}{celltype}{$cellanno{$sample}}{ref_count}++;
+				$data{$key}{zyg}{$sample} = 'ref';
+			}
+			
 		}
 		
-		$data{$key}{zyg}{$sample} = $zyg;
+		
+	} else {
+		#Get stats from genotype info for vcf
+		for (my $count = 0; $count < @genotypes; $count++) {
+			my @geno_fields = split(':',$genotypes[$count]);
+			$sample = defined $samples[$count]?$samples[$count]:0; #Mutect doesn't list samples
+			
+			#Don't count if sample not included (except with controls or count_all flag)
+			if (keys %samples && !keys %controls) {
+				next unless exists $samples{$sample} ;
+			}
+			
+			my ($allele1,$allele2);
+			if ($geno_fields[0] =~ /\//) {
+				($allele1,$allele2) = split('/',$geno_fields[0]);
+			} elsif ($geno_fields[0] =~ /\|/) {
+				($allele1,$allele2) = split('\|',$geno_fields[0]);
+			} else {
+				#Exception->throw("ERROR: Can't handle genotype $geno_fields[0]\n");
+				next;
+			}
+			if ($allele1 eq '0' && $allele2 eq '0') {
+				$zyg = 'ref';
+				$data{$key}{ref_count}++;
+				$data{$key}{celltype}{$cellanno{$sample}}{ref_count}++;
+			} elsif ($geno_fields[0] eq './.' || $geno_fields[0] eq '.|.') {
+				$zyg = 'no_call';
+				$data{$key}{no_data_count}++;
+				$data{$key}{celltype}{$cellanno{$sample}}{nodata_count}++;
+			} elsif ($allele1 == $allele2) {
+				if ($allele1 == $zyg_count) {
+					$zyg = 'hom';
+					$data{$key}{hom_count}++;
+					$data{$key}{var_count}++;
+					$data{$key}{celltype}{$cellanno{$sample}}{var_count}++;
+					$data{$key}{celltype}{$cellanno{$sample}}{hom_count}++;
+					if ($sample) {
+						push @{$data{$key}{var_samples}},$sample;
+						$sample_varcount{$sample}++;
+					}
+				} else {
+					#Handling for second varaint allele not reported
+					$zyg = 'ref';
+				}
+			} elsif ($allele1 != $allele2) {
+				if ($zyg_count == $allele1 || $zyg_count == $allele2) {
+					$zyg = 'het';
+					$data{$key}{het_count}++;
+					$data{$key}{var_count}++;
+					$data{$key}{celltype}{$cellanno{$sample}}{var_count}++;
+					$data{$key}{celltype}{$cellanno{$sample}}{het_count}++;
+					if ($sample) {
+						push @{$data{$key}{var_samples}},$sample;
+						$sample_varcount{$sample}++;
+					}
+				} else {
+					#Handling for second varaint allele not reported
+					$zyg = 'ref';
+				} 
+				
+			}  else {
+				Exception->throw("ERROR with $genotypes[$count]\n");
+			}
+			
+			$data{$key}{zyg}{$sample} = $zyg;
+			
+		}
 		
 	}
+
+
 	
 	
 	
@@ -1011,18 +1200,20 @@ for my $key (@keys) {
 	my $alleles_key = "$chr:$start:$end";
 
 	#First try allele field from vcf
-	if (exists $data{$key}{total_ac}) {
-		if ($data{$key}{total_ac} > 0) {
-				$average_score = sprintf("%.2f",$data{$key}{qual} / $data{$key}{total_ac});
-		} elsif (exists $total_alleles{$alleles_key}) {
-			#otherwise use allele count from parsing (problems with complex snv/indel mixed events)
-			if ($total_alleles{$alleles_key} > 0) {
-				$average_score = sprintf("%.2f",$data{$key}{qual} / $total_alleles{$alleles_key});
+	if (!$h5) {
+		#h5's don't report total quality score
+		if (exists $data{$key}{total_ac}) {
+			if ($data{$key}{total_ac} > 0) {
+					$average_score = sprintf("%.2f",$data{$key}{qual} / $data{$key}{total_ac});
+			} elsif (exists $total_alleles{$alleles_key}) {
+				#otherwise use allele count from parsing (problems with complex snv/indel mixed events)
+				if ($total_alleles{$alleles_key} > 0) {
+					$average_score = sprintf("%.2f",$data{$key}{qual} / $total_alleles{$alleles_key});
+				}
 			}
+			
 		}
-		
 	}
-	
 	#Start filtering here
 	
 	#If below min_mean_af
@@ -1322,6 +1513,33 @@ if ($cell_anno) {
 	
 }
 
+
+#Simple stats to avoid installing Statistics::Descriptive as not standard
+sub _mean_median { 
+	my @args = @_;
+	my %args = @args;
+	
+	
+	my @numbers = @{$args{-numbers}};
+	
+	my $sum = 0;
+	my @sorted_numbers = sort {$a<=>$b} @numbers;
+	foreach (@numbers) { $sum += $_; }
+	
+    my $mean = $sum/@numbers;
+    my $median_pos = int(@numbers / 2);
+
+    my $median;
+    if ( @numbers % 2 == 1) {
+        $median = $sorted_numbers[$median_pos];
+    } else {
+        my $median_pos2 = $median_pos - 1;
+        $median = ($sorted_numbers[$median_pos] + $sorted_numbers[$median_pos2]) / 2;
+    }
+    
+    
+  	return ($mean,$median);
+}
 
 
 
