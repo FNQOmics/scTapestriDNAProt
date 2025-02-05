@@ -56,10 +56,11 @@ pod2usage(1) if ($OPT{help} || (!$OPT{vcf_in} && !$OPT{h5vcf_in}));
 =head1 SYNOPSIS
 
 tapestri.pl 
-	-vcf_in output_dir 
+	-vcf_in MissionBio_vcf 
+	-h5vcf_in Vcflike_from_convert_h5_to_tsv.R
 	-outdir outdir(default=cwd)
 	-outfile output_summary_name(in_outdir)
-	-cell_annotation_file cell_annotation_file(tsv_with_format 'sample celltype')
+	-cell_annotation_file cell_annotation_file(tsv_with_format 'sample/barcode celltype')
 	-cell_type specific_celltype_to_use(default=all)
 	-vep_conf conf_file_if_running_vep_annotation_steps
 	-min_varcount_total minimum_number_samples_with_variant
@@ -549,6 +550,7 @@ if ($overwrite || !-e "$outdir/$vcf_out") {
 			}
 
 			my $allele_count = 0;
+			my $data_count = $sample_count;
 			my @var_quals = my @afs = my @var_counts = ();
 			
 			
@@ -558,7 +560,12 @@ if ($overwrite || !-e "$outdir/$vcf_out") {
 				
 				my ($dp,$af,$gq,$ngt) = $geno_string =~ /DP=(\d+);AF=([0-9\.]+);GQ=(\d+);NGT=(\d+)/;
 				
-				if ($ngt == 1) {
+				#No data here so 
+				if ($ngt == 3) {
+					$data_count--;
+				}
+				
+				if ($ngt == 1 || $ngt == 2) {
 					$allele_count++;
 				} 
 				my $read_count = 0;
@@ -586,7 +593,7 @@ if ($overwrite || !-e "$outdir/$vcf_out") {
 				($mean_gq,undef) = _mean_median(-numbers=>\@var_quals);
 			}
 			
-			my $allele_total = $allele_count .'/'.$sample_count;
+			my $allele_total = $allele_count .'/'.$data_count;
 			
 			my $h5_str  = $var_type.';'.$full_var_key.';Q='.sprintf("%.2f",$mean_gq). ';AC='.$allele_count . ';ZC=1'.";ALLELE=".$allele_total.";MEANAF=".sprintf("%.4f",$mean_af).";MEDAF=".sprintf("%.4f",$median_af).";VAR_READ_COUNTS=".$var_read_counts;
 			if ($var_type eq 'INS') {
@@ -665,7 +672,7 @@ my %mult_allele = ();
 my %total_alleles = (); #Use for generating average score per variant cell
 
 
-print STDERR "Parsing vcf...\n";
+print STDERR "Parsing variant file...\n";
 while (<PARSED>) {
     $_ =~ s/^chr//;
 	chomp;
@@ -676,7 +683,7 @@ while (<PARSED>) {
     	next unless $chr_filter eq $chr;
   	}
 
-	my ($var_type,$var_base_str,$qual,$allele_count,$zyg_count,$var_allele_total,$mean_af,$median_af,$var_read_count) = $data =~ /([A-Z]+);.*:(\S+);Q=(\S+);AC=(\d+);ZC=(\d+);ALLELE=(\d+).*MEANAF=(\S+);MEDAF=([0-9\.]+);VAR_READ_COUNTS=([0-9\/,]+)/;
+	my ($var_type,$var_base_str,$qual,$allele_count,$zyg_count,$var_allele_total,$mean_af,$median_af,$var_read_count) = $data =~ /([A-Z]+);.*:(\S+);Q=(\S+);AC=(\d+);ZC=(\d+);ALLELE=([0-9\/]+).*MEANAF=(\S+);MEDAF=([0-9\.]+);VAR_READ_COUNTS=([0-9\/,]+)/;
 	
 	if ($var_type !~ /./) {
 		print STDERR "ERROR: Data $data\n";
@@ -710,11 +717,16 @@ while (<PARSED>) {
 			my ($dp,$af,$gq,$ngt) = $genotypes[$count] =~ /DP=(\d+);AF=([0-9\.]+);GQ=(\d+);NGT=(\d+)/;
 			$sample = defined $samples[$count]?$samples[$count]:0; #Mutect doesn't list samples
 			
-			if ($ngt == 1) {
+			if ($ngt == 1 || $ngt == 2) {
 				$data{$key}{var_count}++;
 				$data{$key}{celltype}{$cellanno{$sample}}{var_count}++;
 				
-				if ($af>0.75) {
+				if ($sample) {
+					push @{$data{$key}{var_samples}},$sample;
+					$sample_varcount{$sample}++;
+				}
+				
+				if ($ngt == 2) {
 					$data{$key}{zyg}{$sample} = 'hom';
 					$data{$key}{hom_count}++;
 					$data{$key}{celltype}{$cellanno{$sample}}{hom_count}++;
@@ -723,6 +735,10 @@ while (<PARSED>) {
 					$data{$key}{het_count}++;
 					$data{$key}{celltype}{$cellanno{$sample}}{het_count}++;				
 				}
+			} elsif ($ngt == 3) {
+				$zyg = 'no_call';
+				$data{$key}{no_data_count}++;
+				$data{$key}{celltype}{$cellanno{$sample}}{nodata_count}++;
 			} else {
 				$data{$key}{ref_count}++;
 				$data{$key}{celltype}{$cellanno{$sample}}{ref_count}++;
@@ -813,11 +829,11 @@ while (<PARSED>) {
 	$line_count++;
 
   if ($line_count % 10000 == 0) {
-    print STDERR "Parsing vcf $chr $start\n";
+    print STDERR "Parsing line number $line_count coord $chr:$start\n";
   }
 }
 
-print STDERR "Parsed vcf...\n";
+print STDERR "Parsed variant file...\n";
 
 
 if ($vep) {
