@@ -520,6 +520,7 @@ if ($overwrite || !-e "$outdir/$vcf_out") {
 			#Upstream deletion and other strange Tapestri cases
 			next if $alt =~ /\*/;
 			next if $ref =~ /\*/;
+			next if $ref eq '.';
 			next if $alt eq '.';
 			next if $alt eq '';
 			my $var_type;
