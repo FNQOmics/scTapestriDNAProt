@@ -1,0 +1,3 @@
+vep_args_exon,--force_overwrite --species homo_sapiens --fork 4 --canonical --coding_only --poly b --sift b --database --port 3337 --assembly GRCh37 
+vep_args_all,--assembly GRCh37 --species homo_sapiens --fork 4 --canonical --domains --af --check_existing --numbers --biotype --regulatory --symbol --database --port 3337
+vep_bin,/drive2/codebase/ext/bin/vep
